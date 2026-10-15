@@ -103,4 +103,42 @@ final class JSONLTailerTests {
         #expect(tailer.retain([]) == [url.standardizedFileURL])
         #expect(tailer.isTracked(url.standardizedFileURL) == false)
     }
+
+    private func lastLines(of url: URL, maxBytes: Int) -> [String] {
+        var lines: [String] = []
+        JSONLTailer.lastLines(of: url, maxBytes: maxBytes) { lines.append(String(decoding: $0, as: UTF8.self)) }
+        return lines
+    }
+
+    @Test func lastLinesReadsAWholeFileSmallerThanTheRange() throws {
+        let url = file("s.jsonl")
+        try writeLines(["one", "", "two"], to: url)
+        #expect(lastLines(of: url, maxBytes: 1024) == ["one", "two"])
+    }
+
+    @Test func lastLinesSkipsALineCutByTheStartOfTheRange() throws {
+        let url = file("s.jsonl")
+        try writeLines(["first-line", "second", "third"], to: url)
+        // The last 17 bytes are "ine\nsecond\nthird\n": "ine" is a cut remnant of "first-line".
+        #expect(lastLines(of: url, maxBytes: 17) == ["second", "third"])
+        // A range starting exactly after a newline still drops its first line: the cut is not detectable.
+        #expect(lastLines(of: url, maxBytes: 13) == ["third"])
+    }
+
+    @Test func lastLinesYieldsNothingWhenTheRangeHoldsNoNewline() throws {
+        let url = file("s.jsonl")
+        try writeLines(["a-very-long-single-line"], to: url, terminated: false)
+        #expect(lastLines(of: url, maxBytes: 5).isEmpty)
+        #expect(lastLines(of: file("missing.jsonl"), maxBytes: 5).isEmpty)
+        #expect(lastLines(of: url, maxBytes: 0).isEmpty)
+    }
+
+    /// The probed file is not being appended to (it is older than the burn window), so its
+    /// last line is complete even without a newline; a torn line just fails to decode later.
+    @Test func lastLinesIncludesATrailingLineWithoutNewline() throws {
+        let url = file("s.jsonl")
+        try writeLines(["one", "two"], to: url, terminated: false)
+        #expect(lastLines(of: url, maxBytes: 1024) == ["one", "two"])
+        #expect(lastLines(of: url, maxBytes: 6) == ["two"])
+    }
 }

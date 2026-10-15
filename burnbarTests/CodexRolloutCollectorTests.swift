@@ -4,8 +4,16 @@
 //
 
 import Foundation
+import Synchronization
 import Testing
 @testable import burnbar
+
+/// Records the files a collector probed for limits, in order.
+final class ProbeLog: Sendable {
+    private let names = Mutex<[String]>([])
+    var probed: [String] { names.withLock { $0 } }
+    func record(_ url: URL) { names.withLock { $0.append(url.lastPathComponent) } }
+}
 
 /// Runs against real temporary files, so `clock` follows wall time to match file modification dates.
 final class CodexRolloutCollectorTests {
@@ -23,6 +31,19 @@ final class CodexRolloutCollectorTests {
     private func file(_ name: String) -> URL { root.appending(path: "2026/10/16/\(name)") }
 
     private func collector() -> CodexRolloutCollector { CodexRolloutCollector(root: root) }
+
+    private func probingCollector(_ log: ProbeLog, probeCount: Int = CodexRolloutCollector.probeCount) -> CodexRolloutCollector {
+        CodexRolloutCollector(root: root, probeCount: probeCount, onProbe: { log.record($0) })
+    }
+
+    /// Writes `lines` to `name` and backdates it past the burn window, so it is only ever probed.
+    @discardableResult
+    private func oldRollout(_ name: String, modifiedHoursAgo hours: Double, _ lines: [String]) throws -> URL {
+        let url = file(name)
+        try writeLines(lines, to: url)
+        try FileManager.default.setAttributes([.modificationDate: clock.addingTimeInterval(-hours * hour)], ofItemAtPath: url.path)
+        return url
+    }
 
     private func window(_ percent: Double, minutes: Int = 300) -> CodexWindowFixture {
         CodexWindowFixture(usedPercent: percent, windowMinutes: minutes, resetsAt: clock.addingTimeInterval(2 * hour))
@@ -121,5 +142,69 @@ final class CodexRolloutCollectorTests {
         try writeLines([codexTokenLine(at: clock.addingTimeInterval(-60), total: codexUsage(input: 10, output: 1))], to: file("rollout-a.jsonl"))
         #expect(await collector().limits(now: clock) == nil)
         #expect(await CodexRolloutCollector(root: root.appending(path: "missing")).limits(now: clock) == nil)
+    }
+
+    @Test func probesTheNewestModifiedFileFirstEvenWhenAnOlderOneHoldsANewerRecord() async throws {
+        try oldRollout("rollout-recent.jsonl", modifiedHoursAgo: 10, [codexTokenLine(at: clock.addingTimeInterval(-30 * hour), primary: window(10))])
+        try oldRollout("rollout-stale.jsonl", modifiedHoursAgo: 20, [codexTokenLine(at: clock.addingTimeInterval(-9 * hour), primary: window(90))])
+        let log = ProbeLog()
+        let sut = probingCollector(log, probeCount: 1)
+
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.1)
+        #expect(log.probed == ["rollout-recent.jsonl"])
+        _ = await sut.limits(now: clock)
+        #expect(log.probed == ["rollout-recent.jsonl"])
+    }
+
+    @Test func probesEachFileVersionOnceWithinProbeCount() async throws {
+        let quiet = codexTokenLine(at: clock.addingTimeInterval(-30 * hour), total: codexUsage(input: 1, output: 1))
+        try oldRollout("rollout-1.jsonl", modifiedHoursAgo: 10, [quiet])
+        try oldRollout("rollout-2.jsonl", modifiedHoursAgo: 11, [quiet])
+        let third = try oldRollout("rollout-3.jsonl", modifiedHoursAgo: 12, [quiet])
+        let log = ProbeLog()
+        let sut = probingCollector(log, probeCount: 2)
+
+        #expect(await sut.limits(now: clock) == nil)
+        #expect(log.probed == ["rollout-1.jsonl", "rollout-2.jsonl"])
+        #expect(await sut.limits(now: clock) == nil)
+        #expect(log.probed == ["rollout-1.jsonl", "rollout-2.jsonl", "rollout-3.jsonl"])
+        #expect(await sut.limits(now: clock) == nil)
+        #expect(log.probed.count == 3)
+
+        try oldRollout(third.lastPathComponent, modifiedHoursAgo: 12.5, [quiet, codexTokenLine(at: clock.addingTimeInterval(-29 * hour), primary: window(42))])
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.42)
+        #expect(log.probed.last == "rollout-3.jsonl")
+    }
+
+    @Test func limitsFallBackWhenTheirFileIsDeleted() async throws {
+        let newest = file("rollout-a.jsonl")
+        try writeLines([codexTokenLine(at: clock.addingTimeInterval(-60), primary: window(70))], to: newest)
+        try writeLines([codexTokenLine(at: clock.addingTimeInterval(-300), primary: window(30))], to: file("rollout-b.jsonl"))
+        let sut = collector()
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.7)
+
+        try FileManager.default.removeItem(at: newest)
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.3)
+    }
+
+    @Test func limitsAreReDerivedWhenTheirFileIsRewritten() async throws {
+        let newest = file("rollout-a.jsonl")
+        try writeLines([codexTokenLine(at: clock.addingTimeInterval(-60), primary: window(70))], to: newest)
+        try writeLines([codexTokenLine(at: clock.addingTimeInterval(-300), primary: window(30))], to: file("rollout-b.jsonl"))
+        let sut = collector()
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.7)
+
+        try writeLines([codexTokenLine(at: clock.addingTimeInterval(-90), total: codexUsage(input: 123456, output: 1))], to: newest)
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.3)
+    }
+
+    @Test func probedLimitsAreDroppedWithTheirFileAndOthersAreProbed() async throws {
+        let recent = try oldRollout("rollout-recent.jsonl", modifiedHoursAgo: 10, [codexTokenLine(at: clock.addingTimeInterval(-10 * hour), primary: window(64))])
+        try oldRollout("rollout-stale.jsonl", modifiedHoursAgo: 20, [codexTokenLine(at: clock.addingTimeInterval(-20 * hour), primary: window(5))])
+        let sut = collector()
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.64)
+
+        try FileManager.default.removeItem(at: recent)
+        #expect(await sut.limits(now: clock)?.rows.first?.percent == 0.05)
     }
 }

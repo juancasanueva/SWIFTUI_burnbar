@@ -98,7 +98,9 @@ nonisolated struct JSONLTailer: Sendable {
 
     /// Delivers the complete lines within the last `maxBytes` of `url`, without tracking it:
     /// a cheap look at the newest records of a file too old to tail. A line cut by the start
-    /// of that range is skipped.
+    /// of that range is skipped (as is the first line whenever the range starts mid-file, since
+    /// a cut there is undetectable). A trailing line without a newline is delivered: such a file
+    /// is not being appended to, so it is complete, and a torn line simply fails to decode.
     static func lastLines(of url: URL, maxBytes: Int, line: (Data) -> Void) {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? handle.close() }
@@ -114,6 +116,7 @@ nonisolated struct JSONLTailer: Sendable {
             if newline > lineStart { line(data[lineStart..<newline]) }
             lineStart = newline + 1
         }
+        if lineStart < data.endIndex { line(data[lineStart...]) }
     }
 
     private func isRewrite(_ known: State, identity: UInt64?, size: UInt64, handle: FileHandle) -> Bool {
