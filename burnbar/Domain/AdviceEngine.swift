@@ -32,6 +32,18 @@ nonisolated enum Advice: Hashable, Sendable {
         }
     }
 
+    /// Kind and provider, without durations: "REST 8H" and "REST 7H" are the same advice.
+    var identity: String {
+        switch self {
+        case .keepUsing(let p): "keepUsing.\(p.rawValue)"
+        case .useNext(let p): "useNext.\(p.rawValue)"
+        case .useNow(let p): "useNow.\(p.rawValue)"
+        case .fiveHourOut(let p, _): "fiveHourOut.\(p.rawValue)"
+        case .rest(let p, _): "rest.\(p.rawValue)"
+        case .spent: "spent"
+        }
+    }
+
     /// Higher is worse; a dismissed chip returns only when severity rises.
     var severity: Int {
         switch self {

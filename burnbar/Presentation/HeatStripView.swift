@@ -14,6 +14,11 @@ struct HeatStripView: View {
 
     static let height: CGFloat = 18
 
+    /// Gauge fill for a used share, clamped to the strip and never thinner than 2 pt.
+    static func gaugeFillHeight(percent: Double) -> CGFloat {
+        max(2, height * min(max(percent, 0), 1))
+    }
+
     var body: some View {
         HStack(spacing: 3) {
             GaugeTick(pace: state.provider(.claude)?.weekly, pulseOpacity: pulseOpacity)
@@ -76,7 +81,7 @@ private struct GaugeTick: View {
             if let pace {
                 Capsule()
                     .fill(Self.color(pace.gauge))
-                    .frame(height: max(2, HeatStripView.height * percent))
+                    .frame(height: HeatStripView.gaugeFillHeight(percent: percent))
                     .opacity(GaugeLevel.pulses(percent: percent) ? pulseOpacity : 1)
             }
         }

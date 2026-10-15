@@ -106,3 +106,68 @@ func makeTestDefaults() -> (UserDefaults, String) {
     let name = "burnbar-tests-\(UUID().uuidString)"
     return (UserDefaults(suiteName: name)!, name)
 }
+
+/// A limits source whose calls wait until `open()`; later calls return at once.
+final class GatedLimits: LimitsSource {
+    private struct State {
+        var isOpen = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        var forces: [Bool] = []
+        var snapshot: LimitSnapshot?
+    }
+
+    private let state: Mutex<State>
+
+    init(_ snapshot: LimitSnapshot? = nil) { state = Mutex(State(snapshot: snapshot)) }
+
+    /// The `force` flag of every call, in order, recorded when the call starts.
+    var forces: [Bool] { state.withLock { $0.forces } }
+
+    func open() {
+        let waiters = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiters = [] }
+            return state.waiters
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func limits(now: Date) async -> LimitSnapshot? {
+        await limits(now: now, force: false)
+    }
+
+    func limits(now: Date, force: Bool) async -> LimitSnapshot? {
+        let mustWait = state.withLock { state in
+            state.forces.append(force)
+            return !state.isOpen
+        }
+        if mustWait {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow = state.withLock { state in
+                    if state.isOpen { return true }
+                    state.waiters.append(continuation)
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        }
+        return state.withLock { $0.snapshot }
+    }
+}
+
+/// Counts account reads; reads nothing real.
+final class CountingAccounts: AccountReading {
+    private let reads = Mutex(0)
+
+    var count: Int { reads.withLock { $0 } }
+
+    func claude() -> AccountInfo? {
+        reads.withLock { $0 += 1 }
+        return nil
+    }
+
+    func codex() -> AccountInfo? {
+        reads.withLock { $0 += 1 }
+        return nil
+    }
+}

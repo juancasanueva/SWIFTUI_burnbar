@@ -26,17 +26,31 @@ final class UsageStoreTests {
         UserDefaults().removePersistentDomain(forName: suiteName)
     }
 
-    private func store(interval: Duration = .seconds(5)) -> UsageStore {
+    private func store(
+        interval: Duration = .seconds(5),
+        claudeLimits: (any LimitsSource)? = nil,
+        accounts: any AccountReading = StubAccounts(),
+        isInert: Bool = false
+    ) -> UsageStore {
         let clock = clock
         return UsageStore(
             collectors: [.claude: claudeCollector, .codex: codexCollector],
-            limits: [.claude: claudeLimits, .codex: codexLimits],
+            limits: [.claude: claudeLimits ?? self.claudeLimits, .codex: codexLimits],
             samples: samples,
-            accounts: StubAccounts(),
+            accounts: accounts,
             defaults: defaults,
             collectInterval: interval,
-            now: { clock.now }
+            now: { clock.now },
+            isInert: isInert
         )
+    }
+
+    /// Codex over its weekly pace and burning now; Claude well under pace.
+    private func seedCodexOverAndClaudeBanked() {
+        claudeCollector.set([])
+        codexCollector.set([event(.codex, at: -600, input: 500, output: 100)])
+        claudeLimits.set(limitSnapshot(.claude, fiveHour: 0.1, weekly: 0.2))
+        codexLimits.set(limitSnapshot(.codex, fiveHour: 0.3, weekly: 0.8))
     }
 
     /// Claude over its weekly pace and burning now; Codex well under pace.
@@ -137,7 +151,7 @@ final class UsageStoreTests {
         sut.dismissAdvice()
         #expect(sut.state.visibleAdvice == nil)
         #expect(sut.state.advice == .useNext(.codex))
-        #expect(defaults.string(forKey: UsageStore.DefaultsKey.dismissedAdvice) == "USE CODEX NEXT")
+        #expect(defaults.string(forKey: UsageStore.DefaultsKey.dismissedIdentity) == "useNext.codex")
         #expect(defaults.integer(forKey: UsageStore.DefaultsKey.dismissedSeverity) == 1)
 
         // A relaunch remembers the dismissal.
@@ -151,6 +165,81 @@ final class UsageStoreTests {
         await relaunched.refreshLimits(force: true)
         #expect(relaunched.state.visibleAdvice == .spent)
         #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedSeverity) == nil)
+    }
+
+    @Test func theSameAdviceStaysHiddenWhileItPersists() async throws {
+        seedOverAndBanked()
+        let sut = store()
+        await sut.refresh()
+        sut.dismissAdvice()
+        clock.advance(400)
+        await sut.refresh()
+        await sut.refreshLimits(force: true)
+        #expect(sut.state.advice == .useNext(.codex))
+        #expect(sut.state.visibleAdvice == nil)
+    }
+
+    @Test func aDifferentAdviceOfEqualSeverityShows() async throws {
+        seedOverAndBanked()
+        let sut = store()
+        await sut.refresh()
+        sut.dismissAdvice()
+        #expect(sut.state.visibleAdvice == nil)
+
+        seedCodexOverAndClaudeBanked()
+        await sut.refresh()
+        await sut.refreshLimits(force: true)
+        #expect(sut.state.advice == .useNext(.claude))
+        #expect(sut.state.advice?.severity == Advice.useNext(.codex).severity)
+        #expect(sut.state.visibleAdvice == .useNext(.claude))
+    }
+
+    @Test func aWorseAdviceShowsAndClearsTheDismissal() async throws {
+        seedOverAndBanked()
+        let sut = store()
+        await sut.refresh()
+        sut.dismissAdvice()
+
+        claudeLimits.set(limitSnapshot(.claude, fiveHour: 0.95, weekly: 0.8))
+        codexLimits.set(limitSnapshot(.codex, fiveHour: 0.95, weekly: 0.2))
+        await sut.refreshLimits(force: true)
+        #expect(sut.state.visibleAdvice == .spent)
+        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedIdentity) == nil)
+        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedSeverity) == nil)
+    }
+
+    @Test func noAdviceClearsTheDismissal() async throws {
+        seedOverAndBanked()
+        let sut = store()
+        await sut.refresh()
+        sut.dismissAdvice()
+
+        claudeLimits.set(LimitSnapshot(provider: .claude, rows: [], measuredAt: now, status: "x", limitsLive: false))
+        codexLimits.set(LimitSnapshot(provider: .codex, rows: [], measuredAt: now, status: "y", limitsLive: false))
+        let failing = store()
+        await failing.refresh()
+        #expect(failing.state.advice == nil)
+        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedIdentity) == nil)
+        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedSeverity) == nil)
+
+        seedOverAndBanked()
+        await failing.refreshLimits(force: true)
+        #expect(failing.state.visibleAdvice == .useNext(.codex))
+    }
+
+    @Test func usagePublishedBeforeTheFirstLimitsKeepsTheDismissal() async throws {
+        seedOverAndBanked()
+        let sut = store()
+        await sut.refresh()
+        sut.dismissAdvice()
+
+        let relaunched = store()
+        await relaunched.collectUsage()
+        #expect(relaunched.state.advice == nil)
+        #expect(defaults.string(forKey: UsageStore.DefaultsKey.dismissedIdentity) == "useNext.codex")
+        await relaunched.refreshLimits(force: false)
+        #expect(relaunched.state.advice == .useNext(.codex))
+        #expect(relaunched.state.visibleAdvice == nil)
     }
 
     @Test func dismissingWithoutAdviceDoesNothing() async throws {
@@ -213,6 +302,78 @@ final class UsageStoreTests {
         #expect(sut.state.accessibilitySummary == "Claude limits unavailable, Codex weekly unknown")
     }
 
+    // MARK: Non-blocking limits
+
+    @Test func usageIsPublishedWhileLimitsAreBlocked() async throws {
+        claudeCollector.set([event(.claude, at: -600, input: 1000)])
+        let gated = GatedLimits()
+        let sut = store(claudeLimits: gated)
+        let tick = Task { await sut.refresh() }
+        try await waitUntil { gated.forces.count == 1 }
+        try await waitOnMain { sut.state.provider(.claude)?.lane.heat == 1000 }
+        gated.open()
+        await tick.value
+    }
+
+    @Test func theLoopKeepsCollectingWhileLimitsAreBlocked() async throws {
+        let gated = GatedLimits()
+        let sut = store(interval: .milliseconds(20), claudeLimits: gated)
+        sut.start()
+        let collector = claudeCollector
+        try await waitUntil { collector.calls >= 3 }
+        #expect(gated.forces == [false])
+        claudeCollector.set([event(.claude, at: -60, input: 42)])
+        try await waitOnMain { sut.state.provider(.claude)?.lane.heat == 42 }
+        sut.stop()
+        gated.open()
+    }
+
+    @Test func aForceDuringAnInFlightFetchRunsExactlyOneFollowUp() async throws {
+        let gated = GatedLimits(limitSnapshot(.claude, fiveHour: 0.3, weekly: 0.42))
+        let sut = store(claudeLimits: gated)
+        let first = Task { await sut.refreshLimits(force: false) }
+        try await waitUntil { gated.forces.count == 1 }
+
+        let second = Task { await sut.refreshLimits(force: true) }
+        let third = Task { await sut.refreshLimits(force: true) }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(gated.forces == [false])
+
+        gated.open()
+        await first.value
+        await second.value
+        await third.value
+        #expect(gated.forces == [false, true])
+        #expect(codexLimits.forces == [false, true])
+        #expect(sut.state.provider(.claude)?.weekly?.percent == 0.42)
+    }
+
+    // MARK: Inert
+
+    @Test func anInertStoreTouchesNoSource() async throws {
+        let accounts = CountingAccounts()
+        let sut = store(interval: .milliseconds(10), accounts: accounts, isInert: true)
+        sut.start()
+        await sut.refreshLimits(force: true)
+        await sut.refresh()
+        try await Task.sleep(for: .milliseconds(50))
+        sut.stop()
+
+        #expect(claudeLimits.forces.isEmpty)
+        #expect(codexLimits.forces.isEmpty)
+        #expect(claudeCollector.calls == 0)
+        #expect(codexCollector.calls == 0)
+        #expect(accounts.count == 0)
+        #expect(samples.recorded.isEmpty)
+    }
+
+    @Test func theInertFactoryHasNoSources() async throws {
+        let sut = UsageStore.inert()
+        #expect(sut.isInert)
+        await sut.refreshLimits(force: true)
+        #expect(sut.state.advice == nil)
+    }
+
     // MARK: Loop
 
     @Test func theLoopTicksUntilStopped() async throws {
@@ -227,5 +388,19 @@ final class UsageStoreTests {
         try await Task.sleep(for: .milliseconds(100))
         #expect(claudeCollector.calls == calls)
         #expect(claudeLimits.forces == [false])
+    }
+}
+
+/// `waitUntil` for main-actor state.
+@MainActor
+private func waitOnMain(timeout: Duration = .seconds(3), _ condition: () -> Bool) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while !condition() {
+        guard clock.now < deadline else {
+            Issue.record("Timed out waiting for a main-actor condition")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
     }
 }
