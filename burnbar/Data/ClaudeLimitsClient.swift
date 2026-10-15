@@ -8,10 +8,14 @@ import Foundation
 /// Fetches Claude plan limits from the OAuth usage endpoint with Claude Code's own sign-in.
 ///
 /// The access token comes from the `Claude Code-credentials` Keychain item; burnbar never
-/// refreshes it (an expired token asks the user to run `claude`). Results are cached for
-/// `refreshInterval` unless a refresh is forced. HTTP 429 backs off by doubling the interval up
-/// to `maxBackoff`, and even a forced refresh waits it out. Every failure keeps the last known
-/// rows (with their original `measuredAt`) and explains itself in `LimitSnapshot.status`.
+/// refreshes it (an expired token asks the user to run `claude`). The Keychain is read off the
+/// actor (the first read may show a consent prompt) and the token is kept in memory until it
+/// expires or is rejected; after a failed read only a forced refresh tries again, so a denied
+/// prompt is not repeated every interval. Results are cached for `refreshInterval` unless a
+/// refresh is forced. HTTP 429 backs off by doubling the interval up to `maxBackoff`, or longer
+/// when `Retry-After` asks for it (still capped), and even a forced refresh waits it out.
+/// Every failure keeps the last known rows (with their original `measuredAt`) and explains
+/// itself in `LimitSnapshot.status`.
 actor ClaudeLimitsClient: LimitsSource {
     static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     static let keychainService = "Claude Code-credentials"
@@ -49,6 +53,15 @@ actor ClaudeLimitsClient: LimitsSource {
     private var backoffInterval: TimeInterval?
     private var backoffUntil: Date?
     private var inFlight: Task<LimitSnapshot, Never>?
+    /// The token in use; dropped when it expires or the endpoint rejects it.
+    private var cachedCredentials: ClaudeCredentials?
+    /// Set after a Keychain read failed (other than not-found); only a forced refresh retries.
+    private var keychainFailed = false
+
+    private enum CredentialsLookup {
+        case found(ClaudeCredentials)
+        case failed(String)
+    }
 
     init(
         keychain: any KeychainReading = SecurityKeychainReader(),
@@ -66,6 +79,9 @@ actor ClaudeLimitsClient: LimitsSource {
         await limits(now: now, force: false)
     }
 
+    /// Whether a refresh is under way.
+    var isRefreshing: Bool { inFlight != nil }
+
     /// - Parameter force: Skips the refresh-interval cache (e.g. when the panel opens), never a 429 backoff.
     func limits(now: Date, force: Bool) async -> LimitSnapshot? {
         if let inFlight { return await inFlight.value }
@@ -73,7 +89,7 @@ actor ClaudeLimitsClient: LimitsSource {
         if !force, let lastAttempt, now.timeIntervalSince(lastAttempt) < refreshInterval { return current }
 
         lastAttempt = now
-        let task = Task { await self.refresh(now: now) }
+        let task = Task { await self.refresh(now: now, force: force) }
         inFlight = task
         let snapshot = await task.value
         inFlight = nil
@@ -81,18 +97,12 @@ actor ClaudeLimitsClient: LimitsSource {
         return snapshot
     }
 
-    private func refresh(now: Date) async -> LimitSnapshot {
+    private func refresh(now: Date, force: Bool) async -> LimitSnapshot {
         let credentials: ClaudeCredentials
-        do {
-            guard let data = try keychain.genericPassword(service: Self.keychainService),
-                  let parsed = ClaudeCredentials(data: data) else { return degraded(Status.signInNotFound, now: now) }
-            credentials = parsed
-        } catch KeychainError.status(errSecItemNotFound) {
-            return degraded(Status.signInNotFound, now: now)
-        } catch {
-            return degraded(Status.keychainUnreadable, now: now)
+        switch await lookUpCredentials(now: now, force: force) {
+        case .found(let found): credentials = found
+        case .failed(let status): return degraded(status, now: now)
         }
-        guard !credentials.isExpired(now: now) else { return degraded(Status.signInExpired, now: now) }
 
         let data: Data
         let response: HTTPURLResponse
@@ -113,15 +123,60 @@ actor ClaudeLimitsClient: LimitsSource {
             lastLive = snapshot
             return snapshot
         case 401, 403:
+            cachedCredentials = nil
             return degraded(Status.signInRejected, now: now)
         case 429:
-            let interval = min((backoffInterval ?? refreshInterval) * 2, maxBackoff)
-            backoffInterval = interval
-            backoffUntil = now.addingTimeInterval(interval)
-            return degraded(Status.rateLimited(retryIn: interval), now: now)
+            let local = min((backoffInterval ?? refreshInterval) * 2, maxBackoff)
+            backoffInterval = local
+            let requested = response.value(forHTTPHeaderField: "Retry-After").flatMap { Self.retryAfter($0, now: now) } ?? 0
+            let wait = min(max(local, requested), maxBackoff)
+            backoffUntil = now.addingTimeInterval(wait)
+            return degraded(Status.rateLimited(retryIn: wait), now: now)
         default:
             return degraded(Status.httpError(response.statusCode), now: now)
         }
+    }
+
+    /// The cached token while valid, else a fresh Keychain read.
+    private func lookUpCredentials(now: Date, force: Bool) async -> CredentialsLookup {
+        if let cachedCredentials, !cachedCredentials.isExpired(now: now) { return .found(cachedCredentials) }
+        cachedCredentials = nil
+        if keychainFailed && !force { return .failed(Status.keychainUnreadable) }
+
+        let data: Data?
+        do {
+            data = try await Self.readKeychain(keychain, service: Self.keychainService)
+            keychainFailed = false
+        } catch KeychainError.status(errSecItemNotFound) {
+            keychainFailed = false
+            return .failed(Status.signInNotFound)
+        } catch {
+            keychainFailed = true
+            return .failed(Status.keychainUnreadable)
+        }
+        guard let data, let parsed = ClaudeCredentials(data: data) else { return .failed(Status.signInNotFound) }
+        guard !parsed.isExpired(now: now) else { return .failed(Status.signInExpired) }
+        cachedCredentials = parsed
+        return .found(parsed)
+    }
+
+    /// `SecItemCopyMatching` blocks (e.g. on a consent prompt), so it runs off the actor.
+    @concurrent
+    private nonisolated static func readKeychain(_ keychain: any KeychainReading, service: String) async throws -> Data? {
+        try keychain.genericPassword(service: service)
+    }
+
+    /// Seconds to wait from a `Retry-After` value: delta-seconds or an HTTP-date. Nil when
+    /// unparseable or negative.
+    nonisolated static func retryAfter(_ value: String, now: Date) -> TimeInterval? {
+        let text = value.trimmingCharacters(in: .whitespaces)
+        if let seconds = Int(text) { return seconds >= 0 ? TimeInterval(seconds) : nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: text) else { return nil }
+        return max(0, date.timeIntervalSince(now))
     }
 
     /// The last known rows (or none) marked as not live, with `status` explaining why.

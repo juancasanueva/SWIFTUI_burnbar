@@ -14,6 +14,9 @@ import Foundation
 /// `minInterval` passed. Samples older than `maxAge` are dropped: on load (malformed lines too,
 /// rewriting the file when anything was dropped) and while running, rewriting the file once
 /// `compactionThreshold` samples have expired.
+///
+/// A failed write leaves the samples in memory and marks the file dirty: the next sample
+/// rewrites the whole file instead of appending, until a write succeeds.
 actor LimitSampleStore {
     static let defaultDirectory = URL.applicationSupportDirectory.appending(path: "burnbar", directoryHint: .isDirectory)
     static let fileName = "limit-samples.jsonl"
@@ -35,6 +38,9 @@ actor LimitSampleStore {
     private let minInterval: TimeInterval
     private let compactionThreshold: Int
     private let now: @Sendable () -> Date
+    private let writer: any LimitSampleWriting
+    /// Set when a write failed, so the file misses samples that are in memory.
+    private var fileIsDirty = false
     /// Nil until the file is first read.
     private var samplesByKey: [Key: [LimitSample]]?
     /// Samples expired in memory since the file was last rewritten.
@@ -47,8 +53,10 @@ actor LimitSampleStore {
         maxAge: TimeInterval = 7 * 24 * 3600,
         minInterval: TimeInterval = 300,
         compactionThreshold: Int = 1000,
+        writer: any LimitSampleWriting = FileLimitSampleWriter(),
         now: @escaping @Sendable () -> Date = Date.init
     ) {
+        self.writer = writer
         self.directory = directory
         self.maxAge = maxAge
         self.minInterval = minInterval
@@ -84,7 +92,7 @@ actor LimitSampleStore {
         samples.append(sample)
         samplesByKey?[key] = samples
 
-        if expiredSinceCompaction >= compactionThreshold {
+        if fileIsDirty || expiredSinceCompaction >= compactionThreshold {
             rewrite()
         } else {
             append(Record(provider: provider, label: label, t: sample.t, percent: sample.percent))
@@ -134,15 +142,10 @@ actor LimitSampleStore {
         line.append(UInt8(ascii: "\n"))
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if let handle = try? FileHandle(forWritingTo: fileURL) {
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                try handle.write(contentsOf: line)
-            } else {
-                try line.write(to: fileURL, options: .atomic)
-            }
+            try writer.append(line, to: fileURL)
         } catch {
-            // Samples stay in memory; the next compaction rewrites the file.
+            // The sample stays in memory; the next one rewrites the whole file.
+            fileIsDirty = true
         }
     }
 
@@ -159,8 +162,13 @@ actor LimitSampleStore {
             data.append(line)
             data.append(UInt8(ascii: "\n"))
         }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try writer.replace(data, at: fileURL)
+            fileIsDirty = false
+        } catch {
+            fileIsDirty = true
+        }
     }
 
     private static var encoder: JSONEncoder {
@@ -174,5 +182,39 @@ actor LimitSampleStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
         return decoder
+    }
+}
+
+/// Writes the sample file; injectable so write failures can be tested.
+nonisolated protocol LimitSampleWriting: Sendable {
+    /// Appends one newline-terminated line, creating the file when missing.
+    func append(_ line: Data, to url: URL) throws
+    /// Atomically replaces the file with `contents`.
+    func replace(_ contents: Data, at url: URL) throws
+}
+
+/// File-system writer. Appending first terminates a torn last line (e.g. from a crash mid-write),
+/// so it cannot swallow the new record.
+nonisolated struct FileLimitSampleWriter: LimitSampleWriting {
+    func append(_ line: Data, to url: URL) throws {
+        guard let handle = try? FileHandle(forUpdating: url) else {
+            try line.write(to: url, options: .atomic)
+            return
+        }
+        defer { try? handle.close() }
+        let end = try handle.seekToEnd()
+        var data = line
+        if end > 0 {
+            try handle.seek(toOffset: end - 1)
+            if try handle.read(upToCount: 1) != Data([UInt8(ascii: "\n")]) {
+                data.insert(UInt8(ascii: "\n"), at: 0)
+            }
+            try handle.seekToEnd()
+        }
+        try handle.write(contentsOf: data)
+    }
+
+    func replace(_ contents: Data, at url: URL) throws {
+        try contents.write(to: url, options: .atomic)
     }
 }
