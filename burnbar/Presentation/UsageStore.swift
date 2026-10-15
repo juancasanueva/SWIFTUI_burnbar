@@ -233,7 +233,9 @@ final class UsageStore {
         let snapshot = snapshots[provider]
         let rows = snapshot?.rows ?? []
         let limits = rows.map { row in
-            LimitRowState(row: row, pace: PaceCalculator.pace(for: row, samples: samples[provider]?[row.label] ?? [], now: now))
+            let pace = PaceCalculator.pace(for: row, samples: samples[provider]?[row.label] ?? [], now: now)
+            // After a passed reset the pace carries the restarted window; show that one.
+            return LimitRowState(row: pace?.row ?? row, pace: pace)
         }
         return ProviderState(
             provider: provider,

@@ -149,4 +149,14 @@ struct AdviceEngineTests {
         #expect(Advice.useNext(.codex).identity != Advice.useNow(.codex).identity)
         #expect(Advice.spent.identity == "spent")
     }
+
+    @Test func aWeeklyOnlySubWithARestartedWeekIsACandidate() throws {
+        // Codex reports only a weekly window whose reset passed 2 days ago: 0% used, 2/7 banked.
+        let restarted = LimitRow(label: "Weekly (7-day)", percent: 0.12, resetsAt: now.addingTimeInterval(-2 * 24 * hour), windowDuration: week)
+        let weekly = try #require(PaceCalculator.pace(for: restarted, samples: [], now: now))
+        let codex = SubscriptionPace(provider: .codex, fiveHour: nil, weekly: weekly)
+        let claude = sub(.claude, weeklyPercent: 0.8, weeklyElapsed: 0.5)
+        #expect(advise([claude, codex]) == .useNext(.codex))
+        #expect(AdviceEngine.isBlocked(codex, now: now) == false)
+    }
 }

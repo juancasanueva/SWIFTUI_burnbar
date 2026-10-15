@@ -7,6 +7,8 @@ import Foundation
 
 /// Pace of one limit row at `now`. Percentages are shares in 0...1.
 nonisolated struct Pace: Hashable, Sendable {
+    /// The row the pace was computed from: the reported row, or, after a passed reset, the
+    /// restarted window (0% used, reset projected forward).
     let row: LimitRow
     /// Share of the window already elapsed, e = (L − (r − now)) / L.
     let elapsed: Double
@@ -25,6 +27,9 @@ nonisolated struct Pace: Hashable, Sendable {
     let backOnPaceAt: Date?
     /// Windows ≥ 36 h: share spendable today, (1 − p) · min(1, 24 / hoursLeft).
     let todayCeiling: Double?
+    /// The reported reset had passed: `row` is the assumed restarted window, at 0% with a reset
+    /// rolled forward by whole windows past `now`, until the provider reports again.
+    var isProjectedReset = false
 
     /// Used share clamped to 0...1, the same value every derived field is computed from.
     var percent: Double { min(max(row.percent, 0), 1) }
@@ -46,15 +51,20 @@ nonisolated enum PaceCalculator {
     static let giftDrop = 0.03
     static let dailyCeilingWindow: TimeInterval = 36 * 3600
 
-    /// Pace for `row`, or nil (unknown) when its reset already passed.
+    /// Pace for `row`. A reset at or before `now` means the window restarted (a deliberate
+    /// deviation from upstream, which shows it as unknown): the pace is computed for 0% used with
+    /// the reset rolled forward by whole windows past `now`, flagged `isProjectedReset`. Nil only
+    /// when the row has no window length to project with.
     ///
     /// Rate samples: only those of the current window (same reset), after the last gift
     /// (a drop of ≥ 3%, which rebases the fit), within min(2 h, 10% of the window) of `now`,
     /// spanning ≥ 10 min. Negative slopes clamp to 0.
-    static func pace(for row: LimitRow, samples: [LimitSample], now: Date) -> Pace? {
+    static func pace(for reported: LimitRow, samples: [LimitSample], now: Date) -> Pace? {
+        let window = reported.windowDuration
+        guard window > 0 else { return nil }
+        let isProjected = reported.resetsAt <= now
+        let row = isProjected ? restarted(reported, now: now) : reported
         let left = row.resetsAt.timeIntervalSince(now)
-        let window = row.windowDuration
-        guard left > 0, window > 0 else { return nil }
 
         let p = min(max(row.percent, 0), 1)
         let e = min(max((window - left) / window, 0), 1)
@@ -73,8 +83,18 @@ nonisolated enum PaceCalculator {
             projected: rate.map { p + $0 * hoursLeft },
             dryAt: burning ? now.addingTimeInterval((1 - p) / rate! * 3600) : nil,
             backOnPaceAt: backOnPace > now ? backOnPace : nil,
-            todayCeiling: window >= dailyCeilingWindow ? (1 - p) * min(1, 24 / hoursLeft) : nil
+            todayCeiling: window >= dailyCeilingWindow ? (1 - p) * min(1, 24 / hoursLeft) : nil,
+            isProjectedReset: isProjected
         )
+    }
+
+    /// The window that follows a passed reset: 0% used, resetting whole windows after the reported
+    /// reset, the first such instant after `now`.
+    static func restarted(_ row: LimitRow, now: Date) -> LimitRow {
+        let windows = (now.timeIntervalSince(row.resetsAt) / row.windowDuration).rounded(.down) + 1
+        return LimitRow(label: row.label, percent: 0,
+                        resetsAt: row.resetsAt.addingTimeInterval(windows * row.windowDuration),
+                        windowDuration: row.windowDuration)
     }
 
     /// Limits fetched longer ago than max(15 min, 3 refreshes) are stale.

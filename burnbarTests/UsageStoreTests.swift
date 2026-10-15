@@ -293,7 +293,7 @@ final class UsageStoreTests {
         #expect(sut.state.provider(.claude)?.status == "Claude limits unreachable")
     }
 
-    @Test func oldLimitsAreStaleAndPassedResetsAreUnknown() async throws {
+    @Test func oldLimitsStayStaleAndAPassedResetRestartsAtZero() async throws {
         let measured = now.addingTimeInterval(-1000)
         let passed = LimitRow(label: "Session (5-hour)", percent: 0.5, resetsAt: now.addingTimeInterval(-1), windowDuration: fiveHours)
         codexLimits.set(LimitSnapshot(provider: .codex, rows: [passed], measuredAt: measured))
@@ -302,8 +302,42 @@ final class UsageStoreTests {
         let codex = try #require(sut.state.provider(.codex))
         #expect(codex.isStale)
         #expect(codex.limits.count == 1)
-        #expect(codex.limits[0].pace == nil)
+        let fiveHour = try #require(codex.fiveHour)
+        #expect(fiveHour.percent == 0)
+        #expect(fiveHour.isProjectedReset)
+        #expect(codex.limits[0].row.percent == 0)
+        #expect(codex.limits[0].row.resetsAt == now.addingTimeInterval(fiveHours - 1))
+    }
+
+    @Test func aWeeklyOnlyProviderHasNoFiveHourRow() async throws {
+        // This account's Codex `primary` is the weekly window and there is no 5-hour window.
+        let weekly = LimitRow(label: LimitRow.label(windowMinutes: 10080), percent: 0.12,
+                              resetsAt: now.addingTimeInterval(3 * 24 * hour), windowDuration: 10080 * 60)
+        codexLimits.set(LimitSnapshot(provider: .codex, rows: [weekly], measuredAt: now))
+        claudeLimits.set(limitSnapshot(.claude, fiveHour: 0.21, weekly: 0.08))
+        let sut = store()
+        await sut.refresh()
+        let codex = try #require(sut.state.provider(.codex))
         #expect(codex.fiveHour == nil)
+        #expect(codex.weekly?.percent == 0.12)
+        #expect(codex.weekly?.isProjectedReset == false)
+        #expect(sut.state.advice != nil)
+        #expect(sut.state.accessibilitySummary.hasPrefix("Claude 8% weekly, Codex 12% weekly"))
+    }
+
+    @Test func adviceCountsARestartedWeeklyRowAsFresh() async throws {
+        // Claude over its weekly pace and burning; Codex's only (weekly) row reset 2 days ago.
+        claudeCollector.set([event(.claude, at: -600, input: 500, output: 100)])
+        claudeLimits.set(limitSnapshot(.claude, fiveHour: 0.3, weekly: 0.8))
+        let passed = LimitRow(label: "Weekly (7-day)", percent: 0.12, resetsAt: now.addingTimeInterval(-2 * 24 * hour), windowDuration: week)
+        codexLimits.set(LimitSnapshot(provider: .codex, rows: [passed], measuredAt: now.addingTimeInterval(-6 * 24 * hour)))
+        let sut = store()
+        await sut.refresh()
+        let codex = try #require(sut.state.provider(.codex))
+        #expect(codex.isStale)
+        #expect(codex.weekly?.percent == 0)
+        #expect(codex.weekly?.isProjectedReset == true)
+        #expect(sut.state.advice == .useNext(.codex))
     }
 
     // MARK: Accessibility

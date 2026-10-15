@@ -39,9 +39,59 @@ struct PaceCalculatorTests {
         #expect(pace(percent: 0.02, elapsed: 0.011).ratio != nil)
     }
 
-    @Test func passedResetIsUnknown() {
-        let stale = LimitRow(label: "x", percent: 0.5, resetsAt: now, windowDuration: fiveHours)
-        #expect(PaceCalculator.pace(for: stale, samples: [], now: now) == nil)
+    // Deliberate deviation from upstream: a passed reset means the window restarted, so the row
+    // reads 0% used with a reset projected forward by whole windows.
+
+    @Test func passedResetRestartsAtZeroWithAProjectedReset() throws {
+        let passed = LimitRow(label: "Weekly (7-day)", percent: 0.12, resetsAt: now.addingTimeInterval(-2 * 24 * hour), windowDuration: week)
+        let p = try #require(PaceCalculator.pace(for: passed, samples: [], now: now))
+        #expect(p.isProjectedReset)
+        #expect(p.percent == 0)
+        #expect(p.row.percent == 0)
+        #expect(p.row.label == "Weekly (7-day)")
+        #expect(p.row.resetsAt == now.addingTimeInterval(5 * 24 * hour))
+        #expect(close(p.elapsed, 2.0 / 7))
+        #expect(p.ratio == 0)
+        #expect(p.verdict == .onTrack)
+        #expect(close(p.allowancePerHour, 1 / (5 * 24)))
+    }
+
+    @Test func projectedResetRollsForwardByWholeWindows() throws {
+        let passed = LimitRow(label: "x", percent: 0.5, resetsAt: now.addingTimeInterval(-12 * hour), windowDuration: fiveHours)
+        let p = try #require(PaceCalculator.pace(for: passed, samples: [], now: now))
+        #expect(p.row.resetsAt == now.addingTimeInterval(3 * hour))
+        #expect(close(p.elapsed, 0.4))
+    }
+
+    @Test func aResetExactlyNowStartsAFreshWindow() throws {
+        let edge = LimitRow(label: "x", percent: 0.5, resetsAt: now, windowDuration: fiveHours)
+        let p = try #require(PaceCalculator.pace(for: edge, samples: [], now: now))
+        #expect(p.isProjectedReset)
+        #expect(p.row.resetsAt == now.addingTimeInterval(fiveHours))
+        #expect(p.elapsed == 0)
+        #expect(p.ratio == nil)
+    }
+
+    @Test func aResetStillAheadIsUnchanged() throws {
+        let ahead = row(percent: 0.3, elapsed: 0.5)
+        let p = try #require(PaceCalculator.pace(for: ahead, samples: [], now: now))
+        #expect(p.isProjectedReset == false)
+        #expect(p.row == ahead)
+        #expect(p.percent == 0.3)
+    }
+
+    @Test func aPassedResetWithoutAWindowIsUnknown() {
+        let passed = LimitRow(label: "x", percent: 0.5, resetsAt: now.addingTimeInterval(-60), windowDuration: 0)
+        #expect(PaceCalculator.pace(for: passed, samples: [], now: now) == nil)
+    }
+
+    @Test func aProjectedWindowIgnoresSamplesFromThePreviousWindow() throws {
+        // Reset 20 min ago: samples before it belong to the old window and must not drive the fit.
+        let passed = LimitRow(label: "x", percent: 0.6, resetsAt: now.addingTimeInterval(-20 * minute), windowDuration: fiveHours)
+        let samples = [sample(at: -50 * minute, 0.4), sample(at: -25 * minute, 0.6)]
+        let p = try #require(PaceCalculator.pace(for: passed, samples: samples, now: now))
+        #expect(p.ratePerHour == nil)
+        #expect(p.dryAt == nil)
     }
 
     @Test func rateUsesTenPercentOfShortWindows() {

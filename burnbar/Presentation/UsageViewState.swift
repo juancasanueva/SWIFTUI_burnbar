@@ -5,7 +5,8 @@
 
 import Foundation
 
-/// One limit row with its pace; `pace` is nil (unknown) once the row's reset has passed.
+/// One limit row with its pace. After a passed reset `row` is the restarted window (0% used,
+/// projected reset, `pace.isProjectedReset`); `pace` is nil only when the row has no window length.
 nonisolated struct LimitRowState: Hashable, Sendable, Identifiable {
     let row: LimitRow
     let pace: Pace?
