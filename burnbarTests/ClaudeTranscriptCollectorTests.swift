@@ -86,7 +86,60 @@ final class ClaudeTranscriptCollectorTests {
 
         try writeLines([claudeLine(id: "c", at: clock.addingTimeInterval(-10), output: 9)], to: url)
         let events = await sut.events(now: clock)
-        #expect(events.contains { $0.split.output == 9 })
+        // The old content is gone, so its turns are dropped and only the new content counts.
+        #expect(events.map(\.split.output) == [9])
+    }
+
+    @Test func rereadsAFileRewrittenInPlaceWithLargerContent() async throws {
+        let url = file("p/s.jsonl")
+        try writeLines([claudeLine(id: "a", at: clock.addingTimeInterval(-90), output: 1)], to: url)
+        let sut = collector()
+        #expect(await sut.events(now: clock).count == 1)
+
+        try writeLines([
+            claudeLine(id: "b", at: clock.addingTimeInterval(-50), output: 2),
+            claudeLine(id: "c", at: clock.addingTimeInterval(-40), output: 3),
+            claudeLine(id: "d", at: clock.addingTimeInterval(-30), output: 4),
+        ], to: url)
+        let events = await sut.events(now: clock)
+        #expect(events.map(\.split.output) == [2, 3, 4])
+    }
+
+    @Test func rereadsAFileReplacedAtomically() async throws {
+        let url = file("p/s.jsonl")
+        try writeLines([claudeLine(id: "a", at: clock.addingTimeInterval(-90), output: 1)], to: url)
+        let sut = collector()
+        #expect(await sut.events(now: clock).count == 1)
+
+        let text = [
+            claudeLine(id: "b", at: clock.addingTimeInterval(-50), output: 2),
+            claudeLine(id: "c", at: clock.addingTimeInterval(-40), output: 3),
+        ].joined(separator: "\n") + "\n"
+        try Data(text.utf8).write(to: url, options: .atomic)
+        #expect(await sut.events(now: clock).map(\.split.output) == [2, 3])
+    }
+
+    @Test func forgetsTurnsOfDeletedFiles() async throws {
+        let kept = file("p/kept.jsonl")
+        let gone = file("p/gone.jsonl")
+        try writeLines([claudeLine(id: "a", at: clock.addingTimeInterval(-90), output: 1)], to: kept)
+        try writeLines([claudeLine(id: "b", at: clock.addingTimeInterval(-60), output: 2)], to: gone)
+        let sut = collector()
+        #expect(await sut.events(now: clock).count == 2)
+
+        try FileManager.default.removeItem(at: gone)
+        #expect(await sut.events(now: clock).map(\.split.output) == [1])
+    }
+
+    @Test func keepsAMessageSharedWithAnotherFileWhenOneIsDeleted() async throws {
+        let at = clock.addingTimeInterval(-60)
+        try writeLines([claudeLine(id: "a", at: at, output: 7)], to: file("p/original.jsonl"))
+        try writeLines([claudeLine(id: "a", at: at, output: 7)], to: file("p/resumed.jsonl"))
+        let sut = collector()
+        #expect(await sut.events(now: clock).count == 1)
+
+        try FileManager.default.removeItem(at: file("p/original.jsonl"))
+        #expect(await sut.events(now: clock).map(\.split.output) == [7])
     }
 
     @Test func dropsAndPrunesEventsOutsideTheWindow() async throws {
