@@ -73,7 +73,7 @@ nonisolated struct LimitSample: Codable, Hashable, Sendable {
     let percent: Double
 }
 
-extension LimitRow {
+nonisolated extension LimitRow {
     /// Display label for a limit window, e.g. 300 min → "Session (5-hour)", 10080 → "Weekly (7-day)".
     static func label(windowMinutes minutes: Int) -> String {
         let day = 24 * 60
