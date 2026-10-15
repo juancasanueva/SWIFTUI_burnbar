@@ -208,7 +208,27 @@ final class UsageStoreTests {
         #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedSeverity) == nil)
     }
 
-    @Test func noAdviceClearsTheDismissal() async throws {
+    @Test func noAdviceFromLiveLimitsClearsTheDismissal() async throws {
+        seedOverAndBanked()
+        let sut = store()
+        await sut.refresh()
+        sut.dismissAdvice()
+
+        // Live snapshots that carry no limit rows: genuinely nothing to advise.
+        claudeLimits.set(LimitSnapshot(provider: .claude, rows: [], measuredAt: now))
+        codexLimits.set(LimitSnapshot(provider: .codex, rows: [], measuredAt: now))
+        let live = store()
+        await live.refresh()
+        #expect(live.state.advice == nil)
+        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedIdentity) == nil)
+        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedSeverity) == nil)
+
+        seedOverAndBanked()
+        await live.refreshLimits(force: true)
+        #expect(live.state.visibleAdvice == .useNext(.codex))
+    }
+
+    @Test func aTransientLimitsFailureKeepsTheDismissal() async throws {
         seedOverAndBanked()
         let sut = store()
         await sut.refresh()
@@ -219,12 +239,12 @@ final class UsageStoreTests {
         let failing = store()
         await failing.refresh()
         #expect(failing.state.advice == nil)
-        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedIdentity) == nil)
-        #expect(defaults.object(forKey: UsageStore.DefaultsKey.dismissedSeverity) == nil)
+        #expect(defaults.string(forKey: UsageStore.DefaultsKey.dismissedIdentity) == "useNext.codex")
 
         seedOverAndBanked()
         await failing.refreshLimits(force: true)
-        #expect(failing.state.visibleAdvice == .useNext(.codex))
+        #expect(failing.state.advice == .useNext(.codex))
+        #expect(failing.state.visibleAdvice == nil)
     }
 
     @Test func usagePublishedBeforeTheFirstLimitsKeepsTheDismissal() async throws {
@@ -336,7 +356,8 @@ final class UsageStoreTests {
 
         let second = Task { await sut.refreshLimits(force: true) }
         let third = Task { await sut.refreshLimits(force: true) }
-        try await Task.sleep(for: .milliseconds(50))
+        // Both extra callers are parked on the in-flight fetch before the gate opens.
+        try await waitOnMain { sut.limitsFetchWaiters == 2 }
         #expect(gated.forces == [false])
 
         gated.open()
@@ -346,6 +367,7 @@ final class UsageStoreTests {
         #expect(gated.forces == [false, true])
         #expect(codexLimits.forces == [false, true])
         #expect(sut.state.provider(.claude)?.weekly?.percent == 0.42)
+        #expect(sut.limitsFetchWaiters == 0)
     }
 
     // MARK: Inert
