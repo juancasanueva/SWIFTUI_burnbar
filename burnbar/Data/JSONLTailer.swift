@@ -96,6 +96,26 @@ nonisolated struct JSONLTailer: Sendable {
         )
     }
 
+    /// Delivers the complete lines within the last `maxBytes` of `url`, without tracking it:
+    /// a cheap look at the newest records of a file too old to tail. A line cut by the start
+    /// of that range is skipped.
+    static func lastLines(of url: URL, maxBytes: Int, line: (Data) -> Void) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return }
+        let start = end - min(end, UInt64(max(0, maxBytes)))
+        var data = bytes(handle, at: start, count: Int(end - start))
+        if start > 0 {
+            guard let firstNewline = data.firstIndex(of: 0x0A) else { return }
+            data = Data(data[(firstNewline + 1)...])
+        }
+        var lineStart = data.startIndex
+        while let newline = data[lineStart...].firstIndex(of: 0x0A) {
+            if newline > lineStart { line(data[lineStart..<newline]) }
+            lineStart = newline + 1
+        }
+    }
+
     private func isRewrite(_ known: State, identity: UInt64?, size: UInt64, handle: FileHandle) -> Bool {
         if size < known.offset { return true }
         if let identity, let old = known.identity, identity != old { return true }
