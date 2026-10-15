@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import Synchronization
 import Testing
 @testable import burnbar
 
@@ -197,5 +198,157 @@ struct ClaudeLimitsClientTests {
         let garbage = try #require(await sut.limits(now: now.addingTimeInterval(600)))
         #expect(garbage.status == "Claude limits response not understood")
         #expect(garbage.rows.count == 4)
+    }
+
+    // MARK: Keychain access and overlap
+
+    @Test func overlappingCallsSendOneRequest() async throws {
+        let transport = StubTransport([.status(200, fullBody), .status(200, fullBody)], delay: .milliseconds(200))
+        let sut = client(transport)
+        async let first = sut.limits(now: now)
+        async let second = sut.limits(now: now, force: true)
+        let (a, b) = await (first, second)
+        #expect(await transport.requests.count == 1)
+        #expect(a == b)
+    }
+
+    @Test func overlappingCallsReadTheKeychainOnce() async throws {
+        let keychain = SlowKeychain(holds: true)
+        let sut = ClaudeLimitsClient(keychain: keychain, transport: StubTransport([.status(200, fullBody)]))
+        async let first = sut.limits(now: now)
+        async let second = sut.limits(now: now, force: true)
+        try await waitUntil { keychain.reads > 0 }
+        keychain.release()
+        _ = await (first, second)
+        #expect(keychain.reads == 1)
+    }
+
+    @Test func aSlowKeychainReadDoesNotBlockTheClient() async throws {
+        let keychain = SlowKeychain(holds: true)
+        let sut = ClaudeLimitsClient(keychain: keychain, transport: StubTransport([.status(200, fullBody)]))
+        let pending = Task { await sut.limits(now: now) }
+        try await waitUntil { keychain.reads > 0 }
+        // The actor answers while the Keychain read is still held.
+        #expect(await sut.isRefreshing)
+        #expect(keychain.released == false)
+        keychain.release()
+        #expect(await pending.value?.limitsLive == true)
+        #expect(await sut.isRefreshing == false)
+    }
+
+    @Test func theTokenIsCachedUntilRejected() async throws {
+        let keychain = SlowKeychain()
+        let transport = StubTransport([.status(200, fullBody), .status(200, fullBody), .status(401, "{}"), .status(200, fullBody)])
+        let sut = ClaudeLimitsClient(keychain: keychain, transport: transport)
+        _ = await sut.limits(now: now)
+        _ = await sut.limits(now: now.addingTimeInterval(300))
+        #expect(keychain.reads == 1)
+
+        // A 401 forgets the token, so the next refresh reads the Keychain again.
+        _ = await sut.limits(now: now.addingTimeInterval(600))
+        #expect(keychain.reads == 1)
+        #expect(await sut.limits(now: now.addingTimeInterval(900))?.limitsLive == true)
+        #expect(keychain.reads == 2)
+    }
+
+    @Test func anExpiredCachedTokenIsReadAgain() async throws {
+        let transport = StubTransport([.status(200, fullBody), .status(200, fullBody)])
+        let keychain = StubKeychain(expiresAt: now.addingTimeInterval(400))
+        let sut = client(transport, keychain: keychain)
+        _ = await sut.limits(now: now)
+        // The cached token has expired and the Keychain still holds the same one.
+        let expired = try #require(await sut.limits(now: now.addingTimeInterval(450)))
+        #expect(expired.status == "Claude Code sign-in expired — run claude to refresh")
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test func aKeychainFailureIsRetriedOnlyWhenForced() async throws {
+        let keychain = CountingFailingKeychain()
+        let sut = ClaudeLimitsClient(keychain: keychain, transport: StubTransport([]))
+        _ = await sut.limits(now: now)
+        _ = await sut.limits(now: now.addingTimeInterval(300))
+        #expect(keychain.reads == 1)
+        let forced = await sut.limits(now: now.addingTimeInterval(310), force: true)
+        #expect(keychain.reads == 2)
+        #expect(forced?.status == "Claude Code sign-in could not be read from the Keychain")
+    }
+
+    // MARK: Retry-After
+
+    @Test func retryAfterSecondsLongerThanTheBackoffIsHonored() async throws {
+        let transport = StubTransport([.headers(429, "{}", ["Retry-After": "1500"]), .status(200, fullBody)])
+        let sut = client(transport)
+        let limited = await sut.limits(now: now)
+        #expect(limited?.status == "Claude limits rate-limited — retrying in 25 min")
+        _ = await sut.limits(now: now.addingTimeInterval(1499), force: true)
+        #expect(await transport.requests.count == 1)
+        _ = await sut.limits(now: now.addingTimeInterval(1500))
+        #expect(await transport.requests.count == 2)
+    }
+
+    @Test func retryAfterDateIsHonored() async throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        let date = formatter.string(from: now.addingTimeInterval(900))
+        let transport = StubTransport([.headers(429, "{}", ["Retry-After": date]), .status(200, fullBody)])
+        let sut = client(transport)
+        _ = await sut.limits(now: now)
+        _ = await sut.limits(now: now.addingTimeInterval(899), force: true)
+        #expect(await transport.requests.count == 1)
+        _ = await sut.limits(now: now.addingTimeInterval(900))
+        #expect(await transport.requests.count == 2)
+    }
+
+    @Test func retryAfterIsCappedAndNeverShortensTheBackoff() async throws {
+        let transport = StubTransport([
+            .headers(429, "{}", ["Retry-After": "10800"]),
+            .headers(429, "{}", ["Retry-After": "60"]),
+            .status(200, fullBody),
+        ])
+        let sut = client(transport)
+        _ = await sut.limits(now: now)
+        _ = await sut.limits(now: now.addingTimeInterval(1799), force: true)
+        #expect(await transport.requests.count == 1)
+        var at = now.addingTimeInterval(1800)
+        _ = await sut.limits(now: at)
+        #expect(await transport.requests.count == 2)
+
+        // Retry-After 60 s is shorter than the doubled local backoff (1200 s), which wins.
+        _ = await sut.limits(now: at.addingTimeInterval(1199), force: true)
+        #expect(await transport.requests.count == 2)
+        at = at.addingTimeInterval(1200)
+        _ = await sut.limits(now: at)
+        #expect(await transport.requests.count == 3)
+    }
+
+    @Test(arguments: [("120", 120.0), ("garbage", nil), ("-5", nil)] as [(String, Double?)])
+    func parsesRetryAfter(value: String, expected: Double?) {
+        #expect(ClaudeLimitsClient.retryAfter(value, now: now) == expected)
+    }
+}
+
+/// Fails every read with a non-not-found status, counting reads.
+final class CountingFailingKeychain: KeychainReading {
+    private let count = Mutex(0)
+    var reads: Int { count.withLock { $0 } }
+
+    func genericPassword(service: String) throws -> Data? {
+        count.withLock { $0 += 1 }
+        throw KeychainError.status(-25293)
+    }
+}
+
+/// Polls `condition` every 10 ms, failing after `timeout`.
+func waitUntil(timeout: Duration = .seconds(3), _ condition: @Sendable () -> Bool) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while !condition() {
+        guard clock.now < deadline else {
+            Issue.record("Timed out waiting for a condition")
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
     }
 }

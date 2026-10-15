@@ -126,4 +126,79 @@ final class LimitSampleStoreTests {
         #expect(await sut.samples(provider: .claude, label: weekly).map(\.percent) == [0.3, 0.4])
         #expect(try lines().count == 2)
     }
+
+    // MARK: Write failures and torn lines
+
+    @Test func aFailedAppendIsWrittenWithTheNextSample() async throws {
+        let writer = FlakyWriter(failures: 1)
+        let clock = clock
+        let sut = LimitSampleStore(directory: directory, writer: writer, now: { clock.now })
+        #expect(await record(sut, at: -600, 0.1))
+        #expect(FileManager.default.fileExists(atPath: file.path) == false)
+
+        #expect(await record(sut, at: -300, 0.2))
+        #expect(writer.replacements == 1)
+        #expect(await store().samples(provider: .claude, label: weekly).map(\.percent) == [0.1, 0.2])
+    }
+
+    @Test func aFailedRewriteStaysPendingUntilAWriteSucceeds() async throws {
+        let writer = FlakyWriter(failures: 2)
+        let clock = clock
+        let sut = LimitSampleStore(directory: directory, writer: writer, now: { clock.now })
+        #expect(await record(sut, at: -900, 0.1))
+        #expect(await record(sut, at: -600, 0.2))
+        #expect(await record(sut, at: -300, 0.3))
+        #expect(await store().samples(provider: .claude, label: weekly).map(\.percent) == [0.1, 0.2, 0.3])
+        // Back to appending once the file is whole again.
+        #expect(await record(sut, at: -60, 0.4))
+        #expect(writer.appends == 1)
+    }
+
+    @Test func appendingAfterATornLineStartsANewLine() async throws {
+        let sut = store()
+        #expect(await record(sut, at: -600, 0.1))
+        try appendText(#"{"provider":"claude","label":"Weekly"#, to: file)
+
+        #expect(await record(sut, at: -300, 0.2))
+        #expect(try lines().count == 3)
+        #expect(await store().samples(provider: .claude, label: weekly).map(\.percent) == [0.1, 0.2])
+    }
+}
+
+/// The real file writer, failing its first `failures` calls.
+final class FlakyWriter: LimitSampleWriting {
+    private struct State {
+        var failures: Int
+        var appends = 0
+        var replacements = 0
+    }
+
+    private let state: Mutex<State>
+    private let real = FileLimitSampleWriter()
+
+    init(failures: Int) { state = Mutex(State(failures: failures)) }
+
+    var appends: Int { state.withLock { $0.appends } }
+    var replacements: Int { state.withLock { $0.replacements } }
+
+    private func failIfDue() throws {
+        let fail = state.withLock { state in
+            guard state.failures > 0 else { return false }
+            state.failures -= 1
+            return true
+        }
+        if fail { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    func append(_ line: Data, to url: URL) throws {
+        try failIfDue()
+        try real.append(line, to: url)
+        state.withLock { $0.appends += 1 }
+    }
+
+    func replace(_ contents: Data, at url: URL) throws {
+        try failIfDue()
+        try real.replace(contents, at: url)
+        state.withLock { $0.replacements += 1 }
+    }
 }
