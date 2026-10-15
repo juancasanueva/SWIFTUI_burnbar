@@ -97,4 +97,16 @@ nonisolated struct LimitSnapshot: Hashable, Sendable {
     let rows: [LimitRow]
     /// When the provider measured these limits (not when burnbar read them).
     let measuredAt: Date
+    /// Why the rows are missing or out of date, e.g. an expired sign-in; nil when all is well.
+    let status: String?
+    /// False when the rows are the last known values (or none) because the latest refresh failed.
+    let limitsLive: Bool
+
+    init(provider: Provider, rows: [LimitRow], measuredAt: Date, status: String? = nil, limitsLive: Bool = true) {
+        self.provider = provider
+        self.rows = rows
+        self.measuredAt = measuredAt
+        self.status = status
+        self.limitsLive = limitsLive
+    }
 }
