@@ -1,0 +1,121 @@
+//
+//  AdviceEngineTests.swift
+//  burnbarTests
+//
+
+import Foundation
+import Testing
+@testable import burnbar
+
+struct AdviceEngineTests {
+    /// A healthy five-hour row: 20% used, 40% elapsed, no rate.
+    private let calmFiveHour = pace(percent: 0.2, elapsed: 0.4, window: fiveHours)
+
+    private func sub(_ provider: Provider, fiveHour: Pace? = nil, weeklyPercent: Double, weeklyElapsed: Double) -> SubscriptionPace {
+        SubscriptionPace(provider: provider, fiveHour: fiveHour ?? calmFiveHour, weekly: pace(percent: weeklyPercent, elapsed: weeklyElapsed))
+    }
+
+    private func advise(_ subs: [SubscriptionPace], current: Provider? = .claude) -> Advice {
+        AdviceEngine.advise(subs, current: current, now: now)
+    }
+
+    @Test func spentWhenEverySubIsBlocked() {
+        let blocked = pace(percent: 0.9, elapsed: 0.5, window: fiveHours)
+        let advice = advise([sub(.claude, fiveHour: blocked, weeklyPercent: 0.1, weeklyElapsed: 0.5),
+                             sub(.codex, fiveHour: blocked, weeklyPercent: 0.1, weeklyElapsed: 0.5)])
+        #expect(advice == .spent)
+        #expect(advice.text == "SPENT")
+    }
+
+    @Test func keepUsingWhenNothingIsMeaningfullyBetter() {
+        let advice = advise([sub(.claude, weeklyPercent: 0.40, weeklyElapsed: 0.50),   // banked 0.10
+                             sub(.codex, weeklyPercent: 0.39, weeklyElapsed: 0.50)])   // banked 0.11 < 1.15×
+        #expect(advice == .keepUsing(.claude))
+        #expect(advice.text == "KEEP USING CLAUDE")
+    }
+
+    @Test func switchesWhenOtherIsFifteenPercentBetter() {
+        let advice = advise([sub(.claude, weeklyPercent: 0.40, weeklyElapsed: 0.50),
+                             sub(.codex, weeklyPercent: 0.30, weeklyElapsed: 0.50)])
+        #expect(advice == .useNext(.codex))
+        #expect(advice.text == "USE CODEX NEXT")
+    }
+
+    @Test func candidateNeedsTwoPercentBanked() {
+        let advice = advise([sub(.claude, weeklyPercent: 0.505, weeklyElapsed: 0.50),  // banked -0.005
+                             sub(.codex, weeklyPercent: 0.485, weeklyElapsed: 0.50)])  // banked 0.015
+        #expect(advice == .keepUsing(.claude))
+    }
+
+    @Test func blockedFiveHourMovesToAlternative() {
+        let blocked = pace(percent: 0.92, elapsed: 0.5, window: fiveHours)
+        let advice = advise([sub(.claude, fiveHour: blocked, weeklyPercent: 0.2, weeklyElapsed: 0.5),
+                             sub(.codex, weeklyPercent: 0.4, weeklyElapsed: 0.5)])
+        #expect(advice == .useNext(.codex))
+    }
+
+    @Test func fullWithinHalfHourCountsAsBlocked() {
+        // 80% used, 0.5/h → dry in 24 min.
+        let samples = [sample(at: -24 * minute, 0.6), sample(at: 0, 0.8)]
+        let draining = pace(percent: 0.8, elapsed: 0.5, window: fiveHours, samples: samples)
+        #expect(AdviceEngine.isBlocked(SubscriptionPace(provider: .claude, fiveHour: draining, weekly: nil), now: now))
+    }
+
+    @Test func useNowWhenBankedWeekEndsSoon() {
+        // Codex: 10 h left of 168 h, banked well over 2%.
+        let advice = advise([sub(.claude, weeklyPercent: 0.2, weeklyElapsed: 0.5),
+                             sub(.codex, weeklyPercent: 0.5, weeklyElapsed: 1 - 10.0 / 168.0)])
+        #expect(advice == .useNow(.codex))
+        #expect(advice.text == "USE CODEX NOW")
+    }
+
+    @Test func noUseNowOutsideTheEndgame() {
+        // 30 h left > 15% of a week (25.2 h).
+        let advice = advise([sub(.claude, weeklyPercent: 0.2, weeklyElapsed: 0.5),
+                             sub(.codex, weeklyPercent: 0.5, weeklyElapsed: 1 - 30.0 / 168.0)])
+        #expect(advice == .keepUsing(.claude))
+    }
+
+    @Test func restUntilBackOnPaceWhenOverWithNoAlternative() {
+        let blocked = pace(percent: 0.95, elapsed: 0.5, window: fiveHours)
+        let advice = advise([sub(.claude, weeklyPercent: 0.6, weeklyElapsed: 0.4),
+                             sub(.codex, fiveHour: blocked, weeklyPercent: 0.1, weeklyElapsed: 0.5)])
+        // backOnPaceAt = reset − L(1 − p) → 100.8 h − 67.2 h = 33.6 h.
+        #expect(advice == .rest(.claude, for: 120_960))
+        #expect(advice.text == "CLAUDE REST 34H")
+    }
+
+    @Test func restUntilFiveHourResetWhenAlternativeHasNothingBanked() {
+        let blocked = pace(percent: 0.95, elapsed: 0.5, window: fiveHours)
+        let advice = advise([sub(.claude, fiveHour: blocked, weeklyPercent: 0.2, weeklyElapsed: 0.5),
+                             sub(.codex, weeklyPercent: 0.5, weeklyElapsed: 0.5)])
+        #expect(advice == .rest(.claude, for: 9_000))
+    }
+
+    @Test func warnsWhenFiveHourRunsOutBeforeReset() {
+        // 60% used at 0.6/h → dry in 40 min, reset in 2.5 h.
+        let samples = [sample(at: -30 * minute, 0.3), sample(at: 0, 0.6)]
+        let draining = pace(percent: 0.6, elapsed: 0.5, window: fiveHours, samples: samples)
+        let advice = advise([sub(.claude, fiveHour: draining, weeklyPercent: 0.2, weeklyElapsed: 0.5)])
+        #expect(advice == .fiveHourOut(.claude, in: 2_400))
+        #expect(advice.text == "CLAUDE 5-HOUR OUT IN 40M")
+    }
+
+    @Test func noCurrentPicksBestBanked() {
+        let advice = advise([sub(.claude, weeklyPercent: 0.4, weeklyElapsed: 0.5),
+                             sub(.codex, weeklyPercent: 0.1, weeklyElapsed: 0.5)], current: nil)
+        #expect(advice == .keepUsing(.codex))
+    }
+
+    @Test func severityOrdersAdviceForDismissal() {
+        #expect(Advice.spent.severity > Advice.rest(.claude, for: hour).severity)
+        #expect(Advice.rest(.claude, for: hour).severity > Advice.fiveHourOut(.claude, in: hour).severity)
+        #expect(Advice.fiveHourOut(.claude, in: hour).severity > Advice.useNext(.codex).severity)
+        #expect(Advice.useNext(.codex).severity > Advice.keepUsing(.claude).severity)
+    }
+
+    @Test(arguments: [(40 * minute, "40M"), (59 * minute, "59M"), (90 * minute, "2H"), (8 * hour, "8H"), (20, "1M")])
+    func durationLabels(interval: TimeInterval, expected: String) {
+        #expect(Advice.durationLabel(interval) == expected)
+    }
+}

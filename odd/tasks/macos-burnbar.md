@@ -58,7 +58,7 @@ Upstream is Linux-only (Quickshell QML + bash collector + Omarchy usage records)
 
 ## Tasks
 - [x] T1 App shell: MenuBarExtra (window style), LSUIElement, sandbox off, remove SwiftData template, folder skeleton. Route: delegated (multi-file).
-- [ ] T2 Domain: models, PaceCalculator, verdict/stage/colour, bucketing, advice picker — pure + Swift Testing (TDD). Route: delegated.
+- [x] T2 Domain: models, PaceCalculator, verdict/stage/colour, bucketing, advice picker — pure + Swift Testing (TDD). Route: delegated.
 - [ ] T3 Data: Claude transcript collector (incremental, dedupe) + tests. Route: delegated.
 - [ ] T4 Data: Codex collector (cumulative deltas + rate_limits) + tests. Route: delegated.
 - [ ] T5 Data: Claude limits client (Keychain + OAuth usage), limit-sample store, account labels. Route: delegated.
@@ -75,7 +75,8 @@ Upstream is Linux-only (Quickshell QML + bash collector + Omarchy usage records)
 
 ## Progress / Evidence
 - 2026-10-16: base commit 83857c2 (template). Branch `feat/macos-burnbar`. RDD: on (global).
-- T1 done (delegated writer): MenuBarExtra .window shell, sandbox off, LSUIElement, SwiftData template removed, App/Domain/Data/Presentation skeleton (comment-only layer files; .gitkeep collides as a bundle resource). Check: `xcodebuild ... build test` -> TEST SUCCEEDED (unit + UI launch test). Commit: see `git log --grep "menu bar app shell"`.
+- T1 done (delegated writer): MenuBarExtra .window shell, sandbox off, LSUIElement, SwiftData template removed, App/Domain/Data/Presentation skeleton (comment-only layer files; .gitkeep collides as a bundle resource). Check: `xcodebuild ... build test` -> TEST SUCCEEDED (unit + UI launch test). Commit bd7f26c.
+- T2 done (delegated writer, TDD): Domain models, UsageAggregator, PaceCalculator (+ isStale), Verdict/Stage/GaugeLevel, AdviceEngine, LanePalette (RGBHex). RED: test target failed to compile (cannot find Provider/UsageEvent/TokenSplit/LimitRow/Pace/PaceCalculator/LimitSample). GREEN: `xcodebuild ... build test` -> TEST SUCCEEDED, 66 test cases passed (incl. UI launch test). Interpretations: gift drop (>= 3% between consecutive samples of the current window) rebases only the rate fit; samples before the window start (previous reset) are ignored; negative slopes clamp to 0; all subs blocked -> SPENT, current blocked/over with no >= 2% banked alternative -> REST (longest of blocking 5-hour reset, full weekly reset, back-on-pace); unknown weekly counts as 0 banked. Commit: `feat: domain usage aggregation and pace math`.
 
 ## Next step
-T1.
+T3.
