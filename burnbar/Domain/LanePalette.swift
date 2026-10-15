@@ -36,3 +36,25 @@ nonisolated enum LanePalette {
         }
     }
 }
+
+extension RGBHex {
+    /// Per-channel linear blend towards `other`; `fraction` is clamped to 0...1.
+    func mix(_ other: RGBHex, _ fraction: Double) -> RGBHex {
+        let t = min(max(fraction, 0), 1)
+        func channel(_ shift: UInt32) -> UInt32 {
+            let a = Double((value >> shift) & 0xFF), b = Double((other.value >> shift) & 0xFF)
+            return UInt32((a + (b - a) * t).rounded()) << shift
+        }
+        return RGBHex(channel(16) | channel(8) | channel(0))
+    }
+}
+
+extension Lane {
+    /// Colour of one heat cell relative to the hottest cell: cold when idle, cold → warm over
+    /// the first half of `max`, warm → hot over the second half.
+    func color(heat: Int, max: Int) -> RGBHex {
+        guard max > 0, heat > 0 else { return cold }
+        let share = min(1, Double(heat) / Double(max))
+        return share <= 0.5 ? cold.mix(warm, share * 2) : warm.mix(hot, (share - 0.5) * 2)
+    }
+}
