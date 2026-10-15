@@ -54,7 +54,8 @@ Upstream is Linux-only (Quickshell QML + bash collector + Omarchy usage records)
 - Refresh: collector every 5 s (incremental), limits every 300 s and on panel open.
 
 ## Delivery strategy
-`ask-on-risk`. Forecast ≈ 2,000+ authored lines (exceeds 400) → chain strategy to be chosen before any PR. No git remote yet; work-unit commits on `feat/macos-burnbar`.
+`ask-on-risk` → chain strategy `stacked-to-main` (user choice, 2026-10-16). Default branch `main` (renamed from master). Remote `origin` = github.com/juancasanueva/SWIFTUI_burnbar (push/PR = user decision).
+- Slice 1 (PR 1): bd7f26c T1 + c7d0e73 T2 — native review lineage review-70c25ffbf3b22016 (granted).
 
 ## Tasks
 - [x] T1 App shell: MenuBarExtra (window style), LSUIElement, sandbox off, remove SwiftData template, folder skeleton. Route: delegated (multi-file).
@@ -77,6 +78,7 @@ Upstream is Linux-only (Quickshell QML + bash collector + Omarchy usage records)
 - 2026-10-16: base commit 83857c2 (template). Branch `feat/macos-burnbar`. RDD: on (global).
 - T1 done (delegated writer): MenuBarExtra .window shell, sandbox off, LSUIElement, SwiftData template removed, App/Domain/Data/Presentation skeleton (comment-only layer files; .gitkeep collides as a bundle resource). Check: `xcodebuild ... build test` -> TEST SUCCEEDED (unit + UI launch test). Commit bd7f26c.
 - T2 done (delegated writer, TDD): Domain models, UsageAggregator, PaceCalculator (+ isStale), Verdict/Stage/GaugeLevel, AdviceEngine, LanePalette (RGBHex). RED: test target failed to compile (cannot find Provider/UsageEvent/TokenSplit/LimitRow/Pace/PaceCalculator/LimitSample). GREEN: `xcodebuild ... build test` -> TEST SUCCEEDED, 66 test cases passed (incl. UI launch test). Interpretations: gift drop (>= 3% between consecutive samples of the current window) rebases only the rate fit; samples before the window start (previous reset) are ignored; negative slopes clamp to 0; all subs blocked -> SPENT, current blocked/over with no >= 2% banked alternative -> REST (longest of blocking 5-hour reset, full weekly reset, back-on-pace); unknown weekly counts as 0 banked. Commit: `feat: domain usage aggregation and pace math`.
+- Review advisories (slice 1) fixed (delegated writer, TDD): 5-hour "full within 0.5 h" blocking now also requires dryAt < resetsAt (isBlocked and restInterval share one helper); Pace.percent returns the clamped share; added tests for weekly >= 99.5% blocking and REST until the weekly reset. RED: `dryAfterResetIsNotBlocked`, `percentIsClampedLikeDerivedValues` failed. GREEN: `xcodebuild ... build test` -> TEST SUCCEEDED, 70 test cases passed. Commit: `fix: guard pace edge cases from review`.
 
 ## Next step
 T3.

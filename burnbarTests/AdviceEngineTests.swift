@@ -61,6 +61,29 @@ struct AdviceEngineTests {
         #expect(AdviceEngine.isBlocked(SubscriptionPace(provider: .claude, fiveHour: draining, weekly: nil), now: now))
     }
 
+    @Test func dryAfterResetIsNotBlocked() {
+        // Reset in 10 min; 50% used at 1.2/h → dry in 25 min, after the reset.
+        let samples = [sample(at: -20 * minute, 0.1), sample(at: 0, 0.5)]
+        let late = pace(percent: 0.5, elapsed: 1 - 10.0 / 300.0, window: fiveHours, samples: samples)
+        #expect(late.dryAt! > late.row.resetsAt)
+        #expect(!AdviceEngine.isBlocked(SubscriptionPace(provider: .claude, fiveHour: late, weekly: nil), now: now))
+    }
+
+    @Test func fullWeekCountsAsBlocked() {
+        let full = SubscriptionPace(provider: .claude, fiveHour: calmFiveHour, weekly: pace(percent: 0.995, elapsed: 0.9))
+        let almost = SubscriptionPace(provider: .claude, fiveHour: calmFiveHour, weekly: pace(percent: 0.994, elapsed: 0.99))
+        #expect(AdviceEngine.isBlocked(full, now: now))
+        #expect(!AdviceEngine.isBlocked(almost, now: now))
+    }
+
+    @Test func restUntilWeeklyResetWhenWeekIsFull() {
+        let advice = advise([sub(.claude, weeklyPercent: 0.996, weeklyElapsed: 0.9),
+                             sub(.codex, weeklyPercent: 0.5, weeklyElapsed: 0.5)])   // open, nothing banked
+        // Weekly reset in 16.8 h outlasts back-on-pace (16.128 h).
+        #expect(advice == .rest(.claude, for: 60_480))
+        #expect(advice.text == "CLAUDE REST 17H")
+    }
+
     @Test func useNowWhenBankedWeekEndsSoon() {
         // Codex: 10 h left of 168 h, banked well over 2%.
         let advice = advise([sub(.claude, weeklyPercent: 0.2, weeklyElapsed: 0.5),

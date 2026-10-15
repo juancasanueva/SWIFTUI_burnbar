@@ -52,7 +52,8 @@ nonisolated enum Advice: Hashable, Sendable {
 }
 
 /// Picks the advice chip. Rules, in order:
-/// 1. Every sub blocked → SPENT. Blocked: 5-hour ≥ 90%, 5-hour full within 0.5 h, or weekly ≥ 99.5%.
+/// 1. Every sub blocked → SPENT. Blocked: 5-hour ≥ 90%, 5-hour full within 0.5 h (before
+///    its reset), or weekly ≥ 99.5%.
 /// 2. A candidate (unblocked, weekly banked ≥ 2%) whose weekly reset is within min(72 h, 15% of
 ///    its window) → USE X NOW (most banked first).
 /// 3. Current sub blocked or over weekly pace → USE best candidate NEXT, else REST until the
@@ -101,11 +102,15 @@ nonisolated enum AdviceEngine {
     }
 
     static func isBlocked(_ sub: SubscriptionPace, now: Date) -> Bool {
-        if let five = sub.fiveHour {
-            if five.percent >= blockedFiveHour { return true }
-            if let dry = five.dryAt, dry.timeIntervalSince(now) <= blockedWithin { return true }
-        }
+        if let five = sub.fiveHour, isFiveHourBlocked(five, now: now) { return true }
         return (sub.weekly?.percent ?? 0) >= weeklyFull
+    }
+
+    /// 5-hour ≥ 90%, or running dry within 0.5 h and before its own reset.
+    private static func isFiveHourBlocked(_ five: Pace, now: Date) -> Bool {
+        if five.percent >= blockedFiveHour { return true }
+        guard let dry = five.dryAt, dry < five.row.resetsAt else { return false }
+        return dry.timeIntervalSince(now) <= blockedWithin
     }
 
     /// Weekly banked share; unknown counts as 0 so it never wins a switch.
@@ -120,7 +125,7 @@ nonisolated enum AdviceEngine {
     /// Longest wait among: a blocking 5-hour reset, a full weekly reset, getting back on weekly pace.
     private static func restInterval(_ sub: SubscriptionPace, now: Date) -> TimeInterval {
         var until = now
-        if let five = sub.fiveHour, five.percent >= blockedFiveHour || (five.dryAt.map { $0.timeIntervalSince(now) <= blockedWithin } ?? false) {
+        if let five = sub.fiveHour, isFiveHourBlocked(five, now: now) {
             until = max(until, five.row.resetsAt)
         }
         if let weekly = sub.weekly {

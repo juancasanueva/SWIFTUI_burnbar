@@ -26,7 +26,8 @@ nonisolated struct Pace: Hashable, Sendable {
     /// Windows ≥ 36 h: share spendable today, (1 − p) · min(1, 24 / hoursLeft).
     let todayCeiling: Double?
 
-    var percent: Double { row.percent }
+    /// Used share clamped to 0...1, the same value every derived field is computed from.
+    var percent: Double { min(max(row.percent, 0), 1) }
     /// Share saved versus a linear burn, e − p.
     var banked: Double { elapsed - percent }
     /// More than 1% behind and ratio > 1.05.
