@@ -110,3 +110,16 @@ nonisolated struct LimitSnapshot: Hashable, Sendable {
         self.limitsLive = limitsLive
     }
 }
+
+/// Who a provider lane is signed in as, for the panel's account label.
+nonisolated struct AccountInfo: Hashable, Sendable {
+    var email: String?
+    var name: String?
+    var organization: String?
+
+    /// An account that authenticates with an API key instead of a sign-in.
+    static let apiKey = AccountInfo(name: "API key")
+
+    /// Email, else name, else organization.
+    var label: String? { email ?? name ?? organization }
+}
