@@ -20,8 +20,6 @@ nonisolated enum ClaudeTranscriptParser {
     static let excludedModelPrefixes = ["kimi", "moonshot"]
 
     private static let usageMarker = Data(#""usage""#.utf8)
-    private static let fractionalTimestamp = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-    private static let wholeSecondTimestamp = Date.ISO8601FormatStyle()
 
     static func turn(from line: String, fallbackSessionID: String) -> ClaudeTurn? {
         turn(from: Data(line.utf8), fallbackSessionID: fallbackSessionID)
@@ -34,7 +32,7 @@ nonisolated enum ClaudeTranscriptParser {
         guard line.range(of: usageMarker) != nil,
               let record = try? JSONDecoder().decode(Record.self, from: line),
               let message = record.message, let id = message.id, let usage = message.usage,
-              let stamp = record.timestamp, let timestamp = date(from: stamp) else { return nil }
+              let stamp = record.timestamp, let timestamp = TranscriptTimestamp.date(from: stamp) else { return nil }
 
         let model = message.model ?? "unknown"
         let lowered = model.lowercased()
@@ -69,10 +67,6 @@ nonisolated enum ClaudeTranscriptParser {
     static func merge(_ turn: ClaudeTurn, into byID: inout [String: ClaudeTurn]) {
         if let kept = byID[turn.messageID], kept.totalTokens >= turn.totalTokens { return }
         byID[turn.messageID] = turn
-    }
-
-    private static func date(from text: String) -> Date? {
-        (try? fractionalTimestamp.parse(text)) ?? (try? wholeSecondTimestamp.parse(text))
     }
 
     // Only the fields burnbar needs; everything else on the line is ignored.

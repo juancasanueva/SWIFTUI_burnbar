@@ -72,3 +72,29 @@ nonisolated struct LimitSample: Codable, Hashable, Sendable {
     let t: Date
     let percent: Double
 }
+
+extension LimitRow {
+    /// Display label for a limit window, e.g. 300 min → "Session (5-hour)", 10080 → "Weekly (7-day)".
+    static func label(windowMinutes minutes: Int) -> String {
+        let day = 24 * 60
+        switch minutes {
+        case 10080: return "Weekly (7-day)"
+        case day: return "Daily (1-day)"
+        case ..<day: return "Session (\(length(minutes)))"
+        case _ where minutes % day == 0: return "Window (\(minutes / day)-day)"
+        default: return "Window (\(length(minutes)))"
+        }
+    }
+
+    private static func length(_ minutes: Int) -> String {
+        minutes % 60 == 0 ? "\(minutes / 60)-hour" : "\(minutes)-minute"
+    }
+}
+
+/// The limit rows one provider reported at a moment, e.g. from its newest rate-limit record.
+nonisolated struct LimitSnapshot: Hashable, Sendable {
+    let provider: Provider
+    let rows: [LimitRow]
+    /// When the provider measured these limits (not when burnbar read them).
+    let measuredAt: Date
+}
