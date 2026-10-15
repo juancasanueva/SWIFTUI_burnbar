@@ -20,7 +20,8 @@ nonisolated struct Burndown: Hashable, Sendable {
     let pace: Pace
     let windowStart: Date
     let resetsAt: Date
-    /// Window start at 0%, the recorded samples of this window, then the current share.
+    /// Window start at 0%, the recorded samples of this window, then the current share. A
+    /// restarted window (projected reset) has no samples of its own: just its 0% points.
     let actual: [BurndownPoint]
     /// A straight burn from 0% at the window start to 100% at the reset.
     let ideal: [BurndownPoint]
@@ -40,12 +41,14 @@ nonisolated struct Burndown: Hashable, Sendable {
         self.windowStart = start
         self.resetsAt = row.resetsAt
 
-        // A restarted window has no samples of its own yet: old-window samples precede `start`.
-        let recorded = samples
-            .filter { $0.t > start && $0.t < now }
+        // Samples of this window only: by time, and by the reset reported when sampled. After a
+        // passed reset any reading still reported belongs to the finished window, so a restarted
+        // window keeps none.
+        let recorded = pace.isProjectedReset ? [] : samples
+            .filter { $0.t > start && $0.t < now && $0.belongs(toWindowEndingAt: row.resetsAt) }
             .sorted { $0.t < $1.t }
             .map { BurndownPoint(t: $0.t, percent: min(max($0.percent, 0), 1)) }
-        actual = [BurndownPoint(t: start, percent: 0)] + recorded + [BurndownPoint(t: now, percent: pace.percent)]
+        actual = Self.uniqueTimes([BurndownPoint(t: start, percent: 0)] + recorded + [BurndownPoint(t: now, percent: pace.percent)])
         ideal = [BurndownPoint(t: start, percent: 0), BurndownPoint(t: row.resetsAt, percent: 1)]
 
         var summary = "\(label) burndown: \(CockpitFormat.percent(pace.percent)) used, "
@@ -53,7 +56,7 @@ nonisolated struct Burndown: Hashable, Sendable {
         if let projectedShare = pace.projected {
             let current = BurndownPoint(t: now, percent: pace.percent)
             if let dry = pace.dryAt, dry < row.resetsAt {
-                projected = [current, BurndownPoint(t: dry, percent: 1)]
+                projected = Self.uniqueTimes([current, BurndownPoint(t: dry, percent: 1)])
                 summary += ", projected to run out in \(CockpitFormat.duration(dry.timeIntervalSince(now)))"
             } else {
                 projected = [current, BurndownPoint(t: row.resetsAt, percent: projectedShare)]
@@ -66,6 +69,15 @@ nonisolated struct Burndown: Hashable, Sendable {
         accessibilitySummary = summary
     }
 
+    /// One point per instant (the last one wins), so every chart point has a distinct x.
+    private static func uniqueTimes(_ points: [BurndownPoint]) -> [BurndownPoint] {
+        var unique: [BurndownPoint] = []
+        for point in points {
+            if unique.last?.t == point.t { unique.removeLast() }
+            unique.append(point)
+        }
+        return unique
+    }
 }
 
 /// One limit row of a card: label, used share, reset and gauge.

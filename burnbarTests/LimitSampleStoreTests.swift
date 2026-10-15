@@ -76,16 +76,32 @@ final class LimitSampleStoreTests {
     @Test func recordsEverySnapshotRowAtItsMeasuredTime() async throws {
         let sut = store()
         let measured = now.addingTimeInterval(-120)
+        let fiveHourReset = now.addingTimeInterval(hour)
+        let weeklyReset = now.addingTimeInterval(24 * hour)
         let snapshot = LimitSnapshot(provider: .claude, rows: [
-            LimitRow(label: "Session (5-hour)", percent: 0.4, resetsAt: now, windowDuration: fiveHours),
-            LimitRow(label: weekly, percent: 0.2, resetsAt: now, windowDuration: week),
+            LimitRow(label: "Session (5-hour)", percent: 0.4, resetsAt: fiveHourReset, windowDuration: fiveHours),
+            LimitRow(label: weekly, percent: 0.2, resetsAt: weeklyReset, windowDuration: week),
         ], measuredAt: measured)
         await sut.record(snapshot)
         // The same (stale) snapshot again adds nothing.
         await sut.record(snapshot)
-        #expect(await sut.samples(provider: .claude, label: "Session (5-hour)") == [LimitSample(t: measured, percent: 0.4)])
-        #expect(await sut.samples(provider: .claude, label: weekly) == [LimitSample(t: measured, percent: 0.2)])
+        #expect(await sut.samples(provider: .claude, label: "Session (5-hour)")
+                == [LimitSample(t: measured, percent: 0.4, resetsAt: fiveHourReset)])
+        #expect(await sut.samples(provider: .claude, label: weekly) == [LimitSample(t: measured, percent: 0.2, resetsAt: weeklyReset)])
         #expect(try lines().count == 2)
+    }
+
+    @Test func skipsRowsWhoseResetHasPassed() async throws {
+        let sut = store()
+        // An old reading still reported after its window ended belongs to the finished window.
+        let snapshot = LimitSnapshot(provider: .codex, rows: [
+            LimitRow(label: weekly, percent: 0.12, resetsAt: now.addingTimeInterval(-hour), windowDuration: week),
+            LimitRow(label: "Session (5-hour)", percent: 0.3, resetsAt: now.addingTimeInterval(hour), windowDuration: fiveHours),
+        ], measuredAt: now.addingTimeInterval(-60))
+        await sut.record(snapshot)
+        #expect(await sut.samples(provider: .codex, label: weekly).isEmpty)
+        #expect(await sut.samples(provider: .codex, label: "Session (5-hour)").map(\.percent) == [0.3])
+        #expect(try lines().count == 1)
     }
 
     @Test func persistsAcrossInstances() async throws {
@@ -98,6 +114,18 @@ final class LimitSampleStoreTests {
         #expect(await second.samples(provider: .codex, label: weekly) == [sample(at: -300, 0.5)])
         // The reloaded last sample still gates appends.
         #expect(await record(second, at: -540, 0.25) == false)
+    }
+
+    @Test func keepsEachSamplesResetAcrossInstancesAndLoadsLinesWithoutOne() async throws {
+        let reset = now.addingTimeInterval(24 * hour)
+        let legacy = #"{"label":"Weekly (7-day)","percent":0.1,"provider":"codex","t":\#(now.timeIntervalSince1970 - 3600)}"#
+        try writeLines([legacy], to: file)
+        let first = store()
+        #expect(await first.record(LimitSample(t: now, percent: 0.2, resetsAt: reset), provider: .codex, label: weekly))
+
+        let second = store()
+        #expect(await second.samples(provider: .codex, label: weekly)
+                == [sample(at: -3600, 0.1), LimitSample(t: now, percent: 0.2, resetsAt: reset)])
     }
 
     @Test func dropsOldAndMalformedLinesOnLoadAndCompacts() async throws {

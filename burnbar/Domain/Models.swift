@@ -71,6 +71,22 @@ nonisolated struct LimitRow: Codable, Hashable, Sendable {
 nonisolated struct LimitSample: Codable, Hashable, Sendable {
     let t: Date
     let percent: Double
+    /// The reset the row reported when sampled, identifying its window; nil for samples
+    /// recorded before it was kept (decoded leniently).
+    let resetsAt: Date?
+
+    init(t: Date, percent: Double, resetsAt: Date? = nil) {
+        self.t = t
+        self.percent = percent
+        self.resetsAt = resetsAt
+    }
+
+    /// Whether the sample was taken in the window ending at `reset`: an unknown reset counts
+    /// as the same window; a reported one may jitter by up to a minute between readings.
+    func belongs(toWindowEndingAt reset: Date) -> Bool {
+        guard let resetsAt else { return true }
+        return abs(resetsAt.timeIntervalSince(reset)) <= 60
+    }
 }
 
 nonisolated extension LimitRow {

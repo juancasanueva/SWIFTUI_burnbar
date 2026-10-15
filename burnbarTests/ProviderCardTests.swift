@@ -182,6 +182,42 @@ struct ProviderCardTests {
         #expect(chart.isProjectedReset)
     }
 
+    @Test func aRestartedWindowShowsNoOldWindowValues() throws {
+        // The provider still reports last week's 12% after the reset passed: those readings fall
+        // inside the restarted window by timestamp but belong to the finished one.
+        let passed = LimitRow(label: weeklyLabel, percent: 0.12, resetsAt: now.addingTimeInterval(-2 * 24 * hour), windowDuration: week)
+        let samples = [weeklyLabel: [sample(at: -24 * hour, 0.12), sample(at: -hour, 0.12)]]
+        let c = card(state(.codex, rows: [passed], samples: samples))
+        let chart = try #require(c.burndown)
+        #expect(chart.actual == [BurndownPoint(t: now.addingTimeInterval(-2 * 24 * hour), percent: 0),
+                                 BurndownPoint(t: now, percent: 0)])
+    }
+
+    @Test func seriesHaveUniqueTimesEvenWhenTheDryPointIsNow() throws {
+        // Spent and still burning: dryAt is now, so the projection's dry point equals the current
+        // point; two samples share one instant (the later one wins).
+        let weekly = row(weeklyLabel, percent: 1, elapsed: 0.5)
+        let samples = [weeklyLabel: [sample(at: -hour, 0.9), sample(at: -hour, 0.94), sample(at: -30 * minute, 0.97)]]
+        let c = card(state(rows: [weekly], samples: samples))
+        let chart = try #require(c.burndown)
+        for series in [chart.actual, chart.ideal, chart.projected ?? []] {
+            #expect(Set(series.map(\.t)).count == series.count)
+        }
+        #expect(chart.actual.map(\.percent) == [0, 0.94, 0.97, 1])
+        #expect(chart.projected == [BurndownPoint(t: now, percent: 1)])
+    }
+
+    @Test func burndownDropsSamplesReportedForAnotherWindow() throws {
+        let weekly = row(weeklyLabel, percent: 0.5, elapsed: 0.5)
+        let samples = [weeklyLabel: [
+            LimitSample(t: now.addingTimeInterval(-3 * hour), percent: 0.9, resetsAt: weekly.resetsAt.addingTimeInterval(-week)),
+            LimitSample(t: now.addingTimeInterval(-2 * hour), percent: 0.4),
+            LimitSample(t: now.addingTimeInterval(-hour), percent: 0.45, resetsAt: weekly.resetsAt.addingTimeInterval(0.5)),
+        ]]
+        let c = card(state(rows: [weekly], samples: samples))
+        #expect(c.burndown?.actual.map(\.percent) == [0, 0.4, 0.45, 0.5])
+    }
+
     @Test func noBurndownWithoutKnownLimits() {
         #expect(card(state(rows: [])).burndown == nil)
     }

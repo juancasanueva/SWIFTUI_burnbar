@@ -406,6 +406,25 @@ final class UsageStoreTests {
         #expect(sut.limitsFetchWaiters == 0)
     }
 
+    @Test func aSecondForcedRefreshWhileOneIsInFlightStartsNoParallelFetch() async throws {
+        // The panel's open and its refresh button both force: the second waits, then one
+        // follow-up runs after the first fetch, never alongside it.
+        let gated = GatedLimits(limitSnapshot(.claude, fiveHour: 0.3, weekly: 0.42))
+        let sut = store(claudeLimits: gated)
+        let first = Task { await sut.refreshLimits(force: true) }
+        try await waitUntil { gated.forces.count == 1 }
+
+        let second = Task { await sut.refreshLimits(force: true) }
+        try await waitOnMain { sut.limitsFetchWaiters == 1 }
+        #expect(gated.forces == [true])
+
+        gated.open()
+        await first.value
+        await second.value
+        #expect(gated.forces == [true, true])
+        #expect(sut.limitsFetchWaiters == 0)
+    }
+
     // MARK: Inert
 
     @Test func anInertStoreTouchesNoSource() async throws {
