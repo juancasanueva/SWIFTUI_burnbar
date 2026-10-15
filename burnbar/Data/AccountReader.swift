@@ -5,6 +5,12 @@
 
 import Foundation
 
+/// Which account each provider's CLI is signed in as; injectable for tests.
+nonisolated protocol AccountReading: Sendable {
+    func claude() -> AccountInfo?
+    func codex() -> AccountInfo?
+}
+
 /// Reads which account each provider's CLI is signed in as, from its local config files.
 ///
 /// - Claude: `~/.claude.json` → `oauthAccount.{emailAddress, displayName, organizationName}`.
@@ -12,7 +18,7 @@ import Foundation
 ///   not verified; it is only a label), else `AccountInfo.apiKey` when `OPENAI_API_KEY` is set.
 ///
 /// Only these fields are decoded; tokens are never kept or logged.
-nonisolated struct AccountReader: Sendable {
+nonisolated struct AccountReader: AccountReading {
     let home: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {

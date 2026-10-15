@@ -17,7 +17,7 @@ import Foundation
 ///
 /// A failed write leaves the samples in memory and marks the file dirty: the next sample
 /// rewrites the whole file instead of appending, until a write succeeds.
-actor LimitSampleStore {
+actor LimitSampleStore: LimitSampleRecording {
     static let defaultDirectory = URL.applicationSupportDirectory.appending(path: "burnbar", directoryHint: .isDirectory)
     static let fileName = "limit-samples.jsonl"
 
@@ -183,6 +183,13 @@ actor LimitSampleStore {
         decoder.dateDecodingStrategy = .secondsSince1970
         return decoder
     }
+}
+
+/// Records limit snapshots and returns each row's samples, for pace rate fitting.
+nonisolated protocol LimitSampleRecording: Sendable {
+    func record(_ snapshot: LimitSnapshot) async
+    /// Samples of one row, oldest first.
+    func samples(provider: Provider, label: String) async -> [LimitSample]
 }
 
 /// Writes the sample file; injectable so write failures can be tested.
