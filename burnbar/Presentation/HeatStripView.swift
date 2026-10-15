@@ -80,20 +80,12 @@ private struct GaugeTick: View {
             Capsule().fill(Color.gray.opacity(0.35))
             if let pace {
                 Capsule()
-                    .fill(Self.color(pace.gauge))
+                    .fill(Color(pace.gauge.tint))
                     .frame(height: HeatStripView.gaugeFillHeight(percent: percent))
                     .opacity(GaugeLevel.pulses(percent: percent) ? pulseOpacity : 1)
             }
         }
         .frame(width: 3, height: HeatStripView.height)
-    }
-
-    private static func color(_ level: GaugeLevel) -> Color {
-        switch level {
-        case .green: Color(RGBHex(0x34C759))
-        case .yellow: Color(RGBHex(0xFFCC00))
-        case .red: Color(LanePalette.error)
-        }
     }
 }
 

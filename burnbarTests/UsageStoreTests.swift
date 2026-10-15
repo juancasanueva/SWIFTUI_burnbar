@@ -116,6 +116,8 @@ final class UsageStoreTests {
         #expect(samples.recorded == [snapshot])
         let rate = try #require(sut.state.provider(.claude)?.fiveHour?.ratePerHour)
         #expect(abs(rate - 0.04) < 1e-9)
+        // The same samples reach the view state for the burndown chart.
+        #expect(sut.state.provider(.claude)?.samples["Session (5-hour)"]?.map(\.percent) == [0.28, 0.30])
     }
 
     @Test func aMissingSnapshotKeepsTheLastOne() async throws {

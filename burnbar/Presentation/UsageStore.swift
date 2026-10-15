@@ -245,7 +245,8 @@ final class UsageStore {
             status: snapshot == nil ? "No \(provider.title) limits yet" : snapshot?.status,
             isStale: snapshot.map { PaceCalculator.isStale(fetchedAt: $0.measuredAt, refreshInterval: limitsInterval, now: now) } ?? false,
             hasError: snapshot.map { !$0.limitsLive && $0.rows.isEmpty } ?? false,
-            account: accounts[provider]
+            account: accounts[provider],
+            samples: samples[provider] ?? [:]
         )
     }
 

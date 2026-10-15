@@ -28,6 +28,8 @@ nonisolated struct ProviderState: Hashable, Sendable, Identifiable {
     /// The latest limits refresh failed and there are no rows to show.
     let hasError: Bool
     let account: AccountInfo?
+    /// Recorded used-share samples per limit label, for the burndown chart.
+    var samples: [String: [LimitSample]] = [:]
 
     var id: Provider { provider }
 
@@ -72,6 +74,13 @@ nonisolated struct UsageViewState: Hashable, Sendable {
     }
 
     var visibleAdvice: Advice? { isAdviceDismissed ? nil : advice }
+
+    /// The cockpit cards, one per provider, as of `updatedAt`.
+    func cards(now: Date) -> [ProviderCard] {
+        providers.map { ProviderCard(state: $0, now: updatedAt ?? now) }
+    }
+
+    var header: CockpitHeader { CockpitHeader(state: self) }
 
     /// Every provider's status, one per line; nil when all is well.
     var statusText: String? {
