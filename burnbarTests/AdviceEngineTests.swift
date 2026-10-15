@@ -141,4 +141,12 @@ struct AdviceEngineTests {
     func durationLabels(interval: TimeInterval, expected: String) {
         #expect(Advice.durationLabel(interval) == expected)
     }
+
+    @Test func identityIsTheKindAndProviderIgnoringDurations() {
+        #expect(Advice.rest(.claude, for: 8 * hour).identity == Advice.rest(.claude, for: 7 * hour).identity)
+        #expect(Advice.fiveHourOut(.codex, in: 40 * minute).identity == "fiveHourOut.codex")
+        #expect(Advice.useNext(.codex).identity != Advice.useNext(.claude).identity)
+        #expect(Advice.useNext(.codex).identity != Advice.useNow(.codex).identity)
+        #expect(Advice.spent.identity == "spent")
+    }
 }

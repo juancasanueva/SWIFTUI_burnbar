@@ -8,18 +8,23 @@ import Observation
 
 /// Owns the collectors and limit sources and publishes an immutable `UsageViewState`.
 ///
-/// A refresh loop ticks every `collectInterval` (5 s): collectors are read on every tick, limits
-/// every `limitsInterval` (300 s) and whenever `refreshLimits(force: true)` is called (panel
-/// open). Each limit snapshot is recorded in the sample store so pace can fit a burn rate.
-/// Failures never throw: they arrive as `LimitSnapshot.status` and show as status text.
+/// Two independent loops tick every `collectInterval` (5 s): one reads the collectors, the other
+/// fetches limits when `limitsInterval` (300 s) has passed. A slow limits fetch (a pending
+/// Keychain prompt, a hung request) therefore never freezes the heat lanes. Limits are also
+/// fetched by `refreshLimits(force: true)` (panel open); a force issued while a fetch is in
+/// flight runs once more after it. Each limit snapshot is recorded in the sample store so pace
+/// can fit a burn rate. Failures never throw: they arrive as `LimitSnapshot.status` and show as
+/// status text. An inert store (`isInert`) ignores every loop and refresh.
 @Observable
 final class UsageStore {
     nonisolated enum DefaultsKey {
-        static let dismissedAdvice = "advice.dismissed.text"
+        static let dismissedIdentity = "advice.dismissed.identity"
         static let dismissedSeverity = "advice.dismissed.severity"
     }
 
     private(set) var state: UsageViewState = .empty
+    /// Hosted tests and UI launch tests: no loop, no fetch, no collection, no account read.
+    let isInert: Bool
 
     @ObservationIgnored private let collectors: [Provider: any UsageCollector]
     @ObservationIgnored private let limitSources: [Provider: any LimitsSource]
@@ -35,8 +40,10 @@ final class UsageStore {
     @ObservationIgnored private var samples: [Provider: [String: [LimitSample]]] = [:]
     @ObservationIgnored private var accounts: [Provider: AccountInfo] = [:]
     @ObservationIgnored private var lastLimitsRefresh: Date?
-    @ObservationIgnored private var isFetchingLimits = false
-    @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private var hasFetchedLimits = false
+    @ObservationIgnored private var limitsFetch: Task<Void, Never>?
+    @ObservationIgnored private var pendingForce = false
+    @ObservationIgnored private var loops: [Task<Void, Never>] = []
 
     init(
         collectors: [Provider: any UsageCollector],
@@ -46,7 +53,8 @@ final class UsageStore {
         defaults: UserDefaults = .standard,
         collectInterval: Duration = .seconds(5),
         limitsInterval: TimeInterval = 300,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        isInert: Bool = false
     ) {
         self.collectors = collectors
         self.limitSources = limits
@@ -56,6 +64,7 @@ final class UsageStore {
         self.collectInterval = collectInterval
         self.limitsInterval = limitsInterval
         self.now = now
+        self.isInert = isInert
     }
 
     /// The real sources: local transcripts, Codex rollout limits, the Claude OAuth endpoint.
@@ -69,49 +78,78 @@ final class UsageStore {
         )
     }
 
+    /// A store with no sources that ignores every refresh: nothing touches the Keychain, account
+    /// files, transcripts or the network.
+    static func inert() -> UsageStore {
+        UsageStore(collectors: [:], limits: [:], samples: NoSampleStore(), accounts: NoAccounts(), isInert: true)
+    }
+
     // MARK: Loop
 
-    /// Starts the refresh loop; a second call does nothing.
+    /// Starts the collection and limits loops; a second call, or any call when inert, does nothing.
     func start() {
-        guard loop == nil else { return }
+        guard !isInert, loops.isEmpty else { return }
+        loops = [
+            tickLoop { await $0.collectUsage() },
+            tickLoop { await $0.refreshLimitsIfDue() },
+        ]
+    }
+
+    func stop() {
+        loops.forEach { $0.cancel() }
+        loops = []
+    }
+
+    private func tickLoop(_ tick: @escaping (UsageStore) async -> Void) -> Task<Void, Never> {
         let interval = collectInterval
-        loop = Task { [weak self] in
+        return Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
+                await tick(self)
                 try? await Task.sleep(for: interval)
             }
         }
     }
 
-    func stop() {
-        loop?.cancel()
-        loop = nil
-    }
-
     // MARK: Refresh
 
-    /// One tick: limits when due, then every collector, then a new state.
+    /// One tick of both loops: usage is collected and published without waiting for limits,
+    /// which are fetched alongside when due. Returns once both are done.
     func refresh() async {
+        guard !isInert else { return }
+        async let limits: Void = refreshLimitsIfDue()
+        await collectUsage()
+        await limits
+    }
+
+    /// Reads every collector and publishes a new state.
+    func collectUsage() async {
+        guard !isInert else { return }
         let now = now()
-        if lastLimitsRefresh.map({ now.timeIntervalSince($0) >= limitsInterval }) ?? true {
-            await fetchLimits(now: now, force: false)
-        }
         await collect(now: now)
         publish(now: now)
     }
 
-    /// Refreshes limits now; `force` skips the sources' caches (never a rate-limit backoff).
-    func refreshLimits(force: Bool) async {
-        let now = now()
-        await fetchLimits(now: now, force: force)
-        publish(now: now)
+    /// Fetches limits when `limitsInterval` has passed and no fetch is in flight.
+    func refreshLimitsIfDue() async {
+        guard !isInert, limitsFetch == nil else { return }
+        if let last = lastLimitsRefresh, now().timeIntervalSince(last) < limitsInterval { return }
+        await fetchLimits(force: false)
     }
 
-    /// Hides the current advice until a more severe one comes up; remembered across launches.
+    /// Refreshes limits now; `force` skips the sources' caches (never a rate-limit backoff).
+    /// While a fetch is in flight, a forced call queues one follow-up fetch and waits for it;
+    /// an unforced call just waits for the running fetch.
+    func refreshLimits(force: Bool) async {
+        guard !isInert else { return }
+        await fetchLimits(force: force)
+    }
+
+    /// Hides the current advice while it persists at the same or lower severity; remembered
+    /// across launches.
     func dismissAdvice() {
         guard let advice = state.advice else { return }
-        defaults.set(advice.text, forKey: DefaultsKey.dismissedAdvice)
+        defaults.set(advice.identity, forKey: DefaultsKey.dismissedIdentity)
         defaults.set(advice.severity, forKey: DefaultsKey.dismissedSeverity)
         publish(now: state.updatedAt ?? now())
     }
@@ -125,11 +163,31 @@ final class UsageStore {
         summary = UsageAggregator.summarize(events, now: now)
     }
 
-    private func fetchLimits(now: Date, force: Bool) async {
-        guard !isFetchingLimits else { return }
-        isFetchingLimits = true
-        defer { isFetchingLimits = false }
+    private func fetchLimits(force: Bool) async {
+        if let running = limitsFetch {
+            if force { pendingForce = true }
+            await running.value
+            return
+        }
+        let fetch = Task {
+            var force = force
+            while true {
+                let now = self.now()
+                await self.fetchLimitsOnce(now: now, force: force)
+                self.publish(now: now)
+                guard self.pendingForce else { break }
+                self.pendingForce = false
+                force = true
+            }
+            self.limitsFetch = nil
+        }
+        limitsFetch = fetch
+        await fetch.value
+    }
+
+    private func fetchLimitsOnce(now: Date, force: Bool) async {
         lastLimitsRefresh = now
+        defer { hasFetchedLimits = true }
 
         accounts[.claude] = accountReader.claude()
         accounts[.codex] = accountReader.codex()
@@ -185,14 +243,38 @@ final class UsageStore {
         )
     }
 
-    /// Whether `advice` is covered by a stored dismissal; a more severe advice clears it.
+    /// Whether `advice` is covered by the stored dismissal: the same advice (kind and provider)
+    /// at the same or lower severity. A different or more severe advice clears the dismissal, and
+    /// so does no advice once limits were fetched (before the first fetch nothing is known yet,
+    /// so a dismissal remembered across launches survives).
     private func isDismissed(_ advice: Advice?) -> Bool {
-        guard let advice, let dismissed = defaults.object(forKey: DefaultsKey.dismissedSeverity) as? Int else { return false }
-        guard advice.severity <= dismissed else {
-            defaults.removeObject(forKey: DefaultsKey.dismissedAdvice)
-            defaults.removeObject(forKey: DefaultsKey.dismissedSeverity)
+        guard let advice else {
+            if hasFetchedLimits { clearDismissal() }
+            return false
+        }
+        guard let identity = defaults.string(forKey: DefaultsKey.dismissedIdentity),
+              let severity = defaults.object(forKey: DefaultsKey.dismissedSeverity) as? Int else { return false }
+        guard advice.identity == identity, advice.severity <= severity else {
+            clearDismissal()
             return false
         }
         return true
     }
+
+    private func clearDismissal() {
+        defaults.removeObject(forKey: DefaultsKey.dismissedIdentity)
+        defaults.removeObject(forKey: DefaultsKey.dismissedSeverity)
+    }
+}
+
+/// The inert store's sample store: records nothing.
+private nonisolated struct NoSampleStore: LimitSampleRecording {
+    func record(_ snapshot: LimitSnapshot) async {}
+    func samples(provider: Provider, label: String) async -> [LimitSample] { [] }
+}
+
+/// The inert store's account reader: reads nothing.
+private nonisolated struct NoAccounts: AccountReading {
+    func claude() -> AccountInfo? { nil }
+    func codex() -> AccountInfo? { nil }
 }
