@@ -43,6 +43,8 @@ final class UsageStore {
     @ObservationIgnored private var hasFetchedLimits = false
     @ObservationIgnored private var limitsFetch: Task<Void, Never>?
     @ObservationIgnored private var pendingForce = false
+    /// Callers currently waiting on an in-flight limits fetch (a test hook for coalescing).
+    @ObservationIgnored private(set) var limitsFetchWaiters = 0
     @ObservationIgnored private var loops: [Task<Void, Never>] = []
 
     init(
@@ -166,7 +168,9 @@ final class UsageStore {
     private func fetchLimits(force: Bool) async {
         if let running = limitsFetch {
             if force { pendingForce = true }
+            limitsFetchWaiters += 1
             await running.value
+            limitsFetchWaiters -= 1
             return
         }
         let fetch = Task {
@@ -229,7 +233,9 @@ final class UsageStore {
         let snapshot = snapshots[provider]
         let rows = snapshot?.rows ?? []
         let limits = rows.map { row in
-            LimitRowState(row: row, pace: PaceCalculator.pace(for: row, samples: samples[provider]?[row.label] ?? [], now: now))
+            let pace = PaceCalculator.pace(for: row, samples: samples[provider]?[row.label] ?? [], now: now)
+            // After a passed reset the pace carries the restarted window; show that one.
+            return LimitRowState(row: pace?.row ?? row, pace: pace)
         }
         return ProviderState(
             provider: provider,
@@ -245,11 +251,12 @@ final class UsageStore {
 
     /// Whether `advice` is covered by the stored dismissal: the same advice (kind and provider)
     /// at the same or lower severity. A different or more severe advice clears the dismissal, and
-    /// so does no advice once limits were fetched (before the first fetch nothing is known yet,
-    /// so a dismissal remembered across launches survives).
+    /// so does no advice from live limits. No advice because nothing is known yet (before the first
+    /// fetch) or because a refresh failed keeps the dismissal: a transient failure must not bring
+    /// a dismissed chip back.
     private func isDismissed(_ advice: Advice?) -> Bool {
         guard let advice else {
-            if hasFetchedLimits { clearDismissal() }
+            if limitsAreLive { clearDismissal() }
             return false
         }
         guard let identity = defaults.string(forKey: DefaultsKey.dismissedIdentity),
@@ -259,6 +266,11 @@ final class UsageStore {
             return false
         }
         return true
+    }
+
+    /// Limits were fetched and every provider's latest snapshot is live (not last-known values).
+    private var limitsAreLive: Bool {
+        hasFetchedLimits && !snapshots.isEmpty && snapshots.values.allSatisfy(\.limitsLive)
     }
 
     private func clearDismissal() {
