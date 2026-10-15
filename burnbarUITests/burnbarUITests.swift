@@ -14,6 +14,8 @@ final class burnbarUITests: XCTestCase {
     @MainActor
     func testLaunches() throws {
         let app = XCUIApplication()
+        // Keep the launched app offline: no Keychain read, no network, no transcript scan.
+        app.launchEnvironment["BURNBAR_INERT"] = "1"
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10) || app.state == .runningBackground)
     }
