@@ -98,6 +98,14 @@ struct PaceCalculatorTests {
         #expect(pace(percent: 0.5, elapsed: 0.5, window: 35 * hour).todayCeiling == nil)
     }
 
+    @Test func percentIsClampedLikeDerivedValues() {
+        let over = pace(percent: 1.2, elapsed: 0.5)
+        #expect(over.percent == 1)
+        #expect(close(over.banked, -0.5))
+        #expect(close(over.ratio, 2))
+        #expect(pace(percent: -0.1, elapsed: 0.5).percent == 0)
+    }
+
     @Test func backOnPaceOnlyWhenAhead() {
         #expect(pace(percent: 0.2, elapsed: 0.5).backOnPaceAt == nil)
     }
