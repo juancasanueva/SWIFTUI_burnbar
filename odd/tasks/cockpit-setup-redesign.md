@@ -27,7 +27,7 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
 - [x] T1 Settings model + store wiring (provider toggles, strip window/cells, refresh intervals, suggest next sub, 5-hour windows, account names, read Claude limits, warn me again). Route: delegated (multi-file).
 - [x] T2 Cockpit redesign (wide dark panel, header, advice banner, columns of cards, headline budget/tokens, glow, footer, theme). Route: delegated (multi-file).
 - [x] T3 Setup screen (three columns, SETUP/DONE toggle, launch at login). Route: delegated (multi-file).
-- [ ] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated.
+- [x] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated.
 
 ## Acceptance criteria
 - Every Setup control changes visible behavior and survives relaunch.
@@ -54,6 +54,14 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
   - Pure logic (`SetupDisplay.swift`): `SubscriptionRow.rows(cards:enabled:)` / `caption(card:isEnabled:)` (sentence-case status line, "Spent until it resets", "No plan reading", "Turned off"), `SetupDisplay.warningsCaption(dismissedCount:)`, `SetupOption` labels for every option enum, `LaunchAtLoginController` (`sync()`, `setEnabled(_:)` reverting on error with "Couldn't change login item: …", approval hint for `.requiresApproval`).
   - Views (`SetupView.swift`): three 290 pt columns of `SetupBox`es (rows split by thin dividers via `Group(subviews:)`), `SetupToggleRow` (small switch, lane/blue tint), `SetupPillRow` + generic `SegmentedPills` (amber selected pill, buttons with `.isSelected`, group labelled), warn-me-again pill, about box with link; `SetupControls` bindings built from `@Bindable` settings. Header reuses `CockpitHeaderView` with `isSetupOpen` (DONE, Esc). The app syncs the login item at launch, `PanelView` again when Setup opens; inert runs use the in-memory item.
   - Verification: `xcodebuild -project burnbar.xcodeproj -scheme burnbar -destination 'platform=macOS' -only-testing:burnbarTests test`: TEST SUCCEEDED, 370 passed, 0 failed, 2 skipped (opt-in renders; setup render via `TEST_RUNNER_BURNBAR_SETUP_RENDER_PATH`). ImageRenderer shows AppKit-backed switches and the link as placeholders.
+  - Commit: 0311ec3 (feat: setup screen with working settings).
+  - Native review: approved and acknowledged; reviewed boundary 0311ec3.
+- T4 done (route: delegated). Test-first: RED observed as compile failures in `EmberMotionTests` / `MenuBarLabelTests` (missing `EmberFrame`, `ember:` argument), then GREEN. README is passive docs (no RED).
+  - Pure logic (`EmberMotion.swift`): `EmberMotion.isAllowed(enabled:reduceMotion:)`, `hasLiveCells(_:)`, deterministic `cellPhase(provider:index:)`, `breath(time:phase:)` (0.7...1, two out-of-step waves), `flashingLanes(previous:current:)` (latest bucket grew; new or shrinking lanes do not flash), `flashIntensity(elapsed:)` (ease-out over 0.8 s); `EmberFrame` (`.still` and inactive frames are static).
+  - Views: `HeatStripView(ember:)` multiplies live-cell opacity and brightens a flashing lane. `MenuBarLabel` renders through `ImageRenderer`, so its `TimelineView` re-renders the image at 10 fps only while `settings.emberMotion && !Reduce Motion` and some lane has live cells (otherwise 4 fps while gauges pulse, or static); flashes start from `onChange` of each healthy lane's latest bucket.
+  - README: cockpit, Setup screen by box, login item approval, ember motion and Reduce Motion, configurable window/cells.
+  - Verification: `xcodebuild ... -only-testing:burnbarTests test`: TEST SUCCEEDED, 412 passed, 0 failed, 2 skipped (opt-in renders). `xcodebuild ... build`: BUILD SUCCEEDED.
+  - Real menu-bar animation not yet checked by eye.
 
 ## Next step
-T4.
+Manual check in the running app (ember breathing/flash in the menu bar, Reduce Motion, Setup toggle), then push/PR (user decision).

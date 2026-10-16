@@ -12,6 +12,8 @@ struct HeatStripView: View {
     let state: UsageViewState
     /// Opacity of gauges at or above 90% used, driven by the label's pulse; 1 when still.
     var pulseOpacity: Double = 1
+    /// Ember motion for the lanes; `.still` draws them static.
+    var ember: EmberFrame = .still
 
     static let height: CGFloat = 18
 
@@ -27,7 +29,7 @@ struct HeatStripView: View {
             }
             VStack(spacing: 2) {
                 ForEach(state.providers) { provider in
-                    LaneCells(provider: provider, peak: state.summary.peakBucketHeat)
+                    LaneCells(provider: provider, peak: state.summary.peakBucketHeat, ember: ember)
                 }
             }
             if let codex = state.provider(.codex) {
@@ -43,10 +45,12 @@ struct HeatStripView: View {
 }
 
 /// One provider's cells, coloured cold → warm → hot by heat relative to the hottest cell
-/// across lanes. A failed lane is solid red.
+/// across lanes. A failed lane is solid red. With ember motion, live cells breathe and the lane
+/// brightens briefly when new burn lands.
 private struct LaneCells: View {
     let provider: ProviderState
     let peak: Int
+    let ember: EmberFrame
 
     private static let cell = CGSize(width: 4, height: 7)
     private static let spacing: CGFloat = 1
@@ -65,10 +69,11 @@ private struct LaneCells: View {
                     let heat = buckets[index]
                     RoundedRectangle(cornerRadius: 1)
                         .fill(Color(lane.color(heat: heat, max: peak)))
-                        .opacity(heat > 0 ? 1 : 0.45)
+                        .opacity(heat > 0 ? ember.cellIntensity(provider: provider.provider, index: index, heat: heat) : 0.45)
                         .frame(width: Self.cell.width, height: Self.cell.height)
                 }
             }
+            .brightness(EmberMotion.flashBrightness * ember.flash(for: provider.provider))
         }
     }
 }
