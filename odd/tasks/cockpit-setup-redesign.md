@@ -26,7 +26,7 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
 ## Tasks
 - [x] T1 Settings model + store wiring (provider toggles, strip window/cells, refresh intervals, suggest next sub, 5-hour windows, account names, read Claude limits, warn me again). Route: delegated (multi-file).
 - [x] T2 Cockpit redesign (wide dark panel, header, advice banner, columns of cards, headline budget/tokens, glow, footer, theme). Route: delegated (multi-file).
-- [ ] T3 Setup screen (three columns, SETUP/DONE toggle, launch at login). Route: delegated (multi-file).
+- [x] T3 Setup screen (three columns, SETUP/DONE toggle, launch at login). Route: delegated (multi-file).
 - [ ] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated.
 
 ## Acceptance criteria
@@ -47,6 +47,13 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
   - Theme (`CockpitTheme.swift`): `CockpitPalette` tokens (dark/light) in `\.cockpitPalette`, `cockpitChrome()`, `cockpitBox(glow:intensity:)`, `SectionLabel`, `StatColumn`, `CockpitTextButtonStyle`, `CockpitIconButton`, `UsageBar(tick:)`; `ThemePreference.colorScheme`, `HeadlineMode.toggled`; `Lane.accent`.
   - Views: wide `CockpitView` (400 pt columns, `width(columns:)`), header with SETUP/refresh/quit, `AdviceBannerButton`, restyled cards and burndown, footer; `PanelView` holds `CockpitScreen` (.cockpit/.setup placeholder) and applies the theme.
   - Verification: `xcodebuild -project burnbar.xcodeproj -scheme burnbar -destination 'platform=macOS' -only-testing:burnbarTests test`: TEST SUCCEEDED, 352 passed, 0 failed, 1 skipped (opt-in render test, `TEST_RUNNER_BURNBAR_RENDER_PATH`).
+  - Commit: 4cb82fd (feat: cinderbar-style wide cockpit).
+  - Native review: approved and acknowledged; reviewed boundary 4cb82fd.
+- T3 done (route: delegated, writer trigger: 2+ non-trivial files). Test-first: RED observed as compile failures in `SetupDisplayTests` (missing `LoginItemControlling`, `LoginItemStatus`, `SubscriptionRow`, `LaunchAtLoginController`), then GREEN. Layout has no meaningful RED; covered by a render smoke test and a visual check against screenshots/setup2.png.
+  - Data (`LoginItem.swift`): `LoginItemStatus`, `LoginItemControlling`, `SystemLoginItem` (`SMAppService.mainApp` register/unregister), `InMemoryLoginItem` for inert runs.
+  - Pure logic (`SetupDisplay.swift`): `SubscriptionRow.rows(cards:enabled:)` / `caption(card:isEnabled:)` (sentence-case status line, "Spent until it resets", "No plan reading", "Turned off"), `SetupDisplay.warningsCaption(dismissedCount:)`, `SetupOption` labels for every option enum, `LaunchAtLoginController` (`sync()`, `setEnabled(_:)` reverting on error with "Couldn't change login item: …", approval hint for `.requiresApproval`).
+  - Views (`SetupView.swift`): three 290 pt columns of `SetupBox`es (rows split by thin dividers via `Group(subviews:)`), `SetupToggleRow` (small switch, lane/blue tint), `SetupPillRow` + generic `SegmentedPills` (amber selected pill, buttons with `.isSelected`, group labelled), warn-me-again pill, about box with link; `SetupControls` bindings built from `@Bindable` settings. Header reuses `CockpitHeaderView` with `isSetupOpen` (DONE, Esc). The app syncs the login item at launch, `PanelView` again when Setup opens; inert runs use the in-memory item.
+  - Verification: `xcodebuild -project burnbar.xcodeproj -scheme burnbar -destination 'platform=macOS' -only-testing:burnbarTests test`: TEST SUCCEEDED, 370 passed, 0 failed, 2 skipped (opt-in renders; setup render via `TEST_RUNNER_BURNBAR_SETUP_RENDER_PATH`). ImageRenderer shows AppKit-backed switches and the link as placeholders.
 
 ## Next step
-T3.
+T4.

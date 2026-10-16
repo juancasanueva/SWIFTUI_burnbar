@@ -11,10 +11,11 @@ enum CockpitScreen: Hashable {
 }
 
 /// The panel's container: reads the store and settings and hands plain values and closures to
-/// `CockpitView` (or the setup screen). Opening the panel forces a limits refresh, and so does
+/// `CockpitView` (or `SetupView`, which also reflects the real login item when it opens). Opening the panel forces a limits refresh, and so does
 /// the header's refresh button. The theme setting forces the panel's colour scheme.
 struct PanelView: View {
     let store: UsageStore
+    let launchAtLogin: LaunchAtLoginController
 
     @State private var isRefreshing = false
     @State private var screen: CockpitScreen = .cockpit
@@ -40,7 +41,22 @@ struct PanelView: View {
                     onQuit: quit
                 )
             case .setup:
-                SetupPlaceholderView(onDone: { screen = .cockpit })
+                let state = store.state
+                SetupView(
+                    header: state.header,
+                    subscriptions: SubscriptionRow.rows(cards: state.cards(now: .now), enabled: settings.enabledProviders),
+                    warningsCaption: SetupDisplay.warningsCaption(dismissedCount: state.dismissedAdviceCount),
+                    canWarnAgain: state.hasDismissedAdvice,
+                    loginItemMessage: launchAtLogin.message,
+                    controls: SetupControls(settings: settings, launchAtLogin: launchAtLogin),
+                    isRefreshing: isRefreshing,
+                    onSetEnabled: settings.setEnabled,
+                    onWarnMeAgain: store.warnMeAgain,
+                    onRefresh: refresh,
+                    onDone: { screen = .cockpit },
+                    onQuit: quit
+                )
+                .onAppear(perform: launchAtLogin.sync)
             }
         }
         .preferredColorScheme(settings.theme.colorScheme)
@@ -62,29 +78,6 @@ struct PanelView: View {
 
     private func quit() {
         NSApplication.shared.terminate(nil)
-    }
-}
-
-/// Stand-in for the setup screen until it is built: a title and DONE back to the cockpit.
-struct SetupPlaceholderView: View {
-    let onDone: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("BURN BAR · SETUP")
-                    .font(.system(size: 13, weight: .heavy))
-                Spacer()
-                Button("DONE", action: onDone)
-                    .buttonStyle(CockpitTextButtonStyle())
-                    .keyboardShortcut(.cancelAction)
-            }
-            Text("Setup is coming soon.")
-                .font(.system(size: 12))
-        }
-        .padding(12)
-        .frame(width: CockpitView.width(columns: 2))
-        .cockpitChrome()
     }
 }
 
@@ -118,7 +111,7 @@ struct CockpitView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Self.spacing) {
-            CockpitHeaderView(header: header, isRefreshing: isRefreshing, onOpenSetup: onOpenSetup,
+            CockpitHeaderView(header: header, isRefreshing: isRefreshing, onToggleSetup: onOpenSetup,
                               onRefresh: onRefresh, onQuit: onQuit)
             if let advice {
                 AdviceBannerButton(banner: advice, action: onDismissAdvice)
@@ -191,11 +184,12 @@ struct AdviceBannerButton: View {
     }
 }
 
-/// Wordmark and trailing-window totals; SETUP, refresh and quit.
+/// Wordmark and trailing-window totals; SETUP (DONE while setup is open, Esc too), refresh and quit.
 struct CockpitHeaderView: View {
     let header: CockpitHeader
+    var isSetupOpen = false
     let isRefreshing: Bool
-    let onOpenSetup: () -> Void
+    let onToggleSetup: () -> Void
     let onRefresh: () -> Void
     let onQuit: () -> Void
 
@@ -213,10 +207,11 @@ struct CockpitHeaderView: View {
             }
             .accessibilityElement(children: .combine)
             Spacer()
-            Button("SETUP", action: onOpenSetup)
+            Button(isSetupOpen ? "DONE" : "SETUP", action: onToggleSetup)
                 .buttonStyle(CockpitTextButtonStyle())
-                .keyboardShortcut(",")
-                .accessibilityLabel("Setup")
+                .keyboardShortcut(isSetupOpen ? .cancelAction : KeyboardShortcut(","))
+                .accessibilityLabel(isSetupOpen ? "Done" : "Setup")
+                .accessibilityHint(isSetupOpen ? "Returns to the cockpit" : "Opens the settings")
             CockpitIconButton(systemImage: "arrow.clockwise",
                               label: isRefreshing ? "Refreshing limits" : "Refresh limits", action: onRefresh)
                 .disabled(isRefreshing)
