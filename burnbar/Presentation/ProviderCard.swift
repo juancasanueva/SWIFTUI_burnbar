@@ -44,10 +44,13 @@ nonisolated struct Burndown: Hashable, Sendable {
         // Samples of this window only: by time, and by the reset reported when sampled. After a
         // passed reset any reading still reported belongs to the finished window, so a restarted
         // window keeps none.
+        // Sorted by time, ties kept in their original order (explicit index tie-break, not
+        // relying on sort stability), so for one instant the last-given sample wins below.
         let recorded = pace.isProjectedReset ? [] : samples
             .filter { $0.t > start && $0.t < now && $0.belongs(toWindowEndingAt: row.resetsAt) }
-            .sorted { $0.t < $1.t }
-            .map { BurndownPoint(t: $0.t, percent: min(max($0.percent, 0), 1)) }
+            .enumerated()
+            .sorted { ($0.element.t, $0.offset) < ($1.element.t, $1.offset) }
+            .map { BurndownPoint(t: $0.element.t, percent: min(max($0.element.percent, 0), 1)) }
         actual = Self.uniqueTimes([BurndownPoint(t: start, percent: 0)] + recorded + [BurndownPoint(t: now, percent: pace.percent)])
         ideal = [BurndownPoint(t: start, percent: 0), BurndownPoint(t: row.resetsAt, percent: 1)]
 

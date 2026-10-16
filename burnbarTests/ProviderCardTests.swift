@@ -207,6 +207,18 @@ struct ProviderCardTests {
         #expect(chart.projected == [BurndownPoint(t: now, percent: 1)])
     }
 
+    @Test func samplesSharingAnInstantKeepTheLastGivenEvenWhenUnsorted() throws {
+        // Ties are broken by the samples' original order, so the last-given one wins whatever
+        // the input order of the other instants.
+        let weekly = row(weeklyLabel, percent: 0.5, elapsed: 0.5)
+        let samples = [weeklyLabel: [
+            sample(at: -30 * minute, 0.45), sample(at: -hour, 0.30), sample(at: -2 * hour, 0.20),
+            sample(at: -hour, 0.31), sample(at: -2 * hour, 0.21), sample(at: -hour, 0.32),
+        ]]
+        let c = card(state(rows: [weekly], samples: samples))
+        #expect(c.burndown?.actual.map(\.percent) == [0, 0.21, 0.32, 0.45, 0.5])
+    }
+
     @Test func burndownDropsSamplesReportedForAnotherWindow() throws {
         let weekly = row(weeklyLabel, percent: 0.5, elapsed: 0.5)
         let samples = [weeklyLabel: [

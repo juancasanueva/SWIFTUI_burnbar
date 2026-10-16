@@ -55,6 +55,36 @@ final class LimitSampleStoreTests {
         #expect(try lines().count == 3)
     }
 
+    @Test func aResetChangeBeyondTheToleranceIsStoredAtOnce() async throws {
+        let sut = store()
+        let reset = now.addingTimeInterval(24 * hour)
+        let shift = LimitSample.resetTolerance + 1
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-900), percent: 0.1, resetsAt: reset), provider: .claude, label: weekly))
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-840), percent: 0.1, resetsAt: reset.addingTimeInterval(shift)),
+                                 provider: .claude, label: weekly))
+        #expect(try lines().count == 2)
+    }
+
+    @Test func aSmallResetShiftWithinTheToleranceIsThrottled() async throws {
+        // A provider whose reported reset drifts by seconds per poll must not defeat minInterval.
+        let sut = store()
+        let reset = now.addingTimeInterval(24 * hour)
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-900), percent: 0.1, resetsAt: reset), provider: .claude, label: weekly))
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-840), percent: 0.1, resetsAt: reset.addingTimeInterval(3)),
+                                 provider: .claude, label: weekly) == false)
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-780), percent: 0.1, resetsAt: reset.addingTimeInterval(-LimitSample.resetTolerance)),
+                                 provider: .claude, label: weekly) == false)
+        #expect(try lines().count == 1)
+    }
+
+    @Test func aResetAppearingCountsAsAChange() async throws {
+        let sut = store()
+        #expect(await record(sut, at: -900, 0.1))
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-840), percent: 0.1, resetsAt: now.addingTimeInterval(24 * hour)),
+                                 provider: .claude, label: weekly))
+        #expect(try lines().count == 2)
+    }
+
     @Test func ignoresSamplesNotNewerThanTheLast() async throws {
         let sut = store()
         #expect(await record(sut, at: -600, 0.10))

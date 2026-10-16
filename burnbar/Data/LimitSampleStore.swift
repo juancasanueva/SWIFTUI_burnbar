@@ -12,7 +12,7 @@ import Foundation
 /// `{"provider", "label", "t" (unix seconds), "percent", "resetsAt"?}` object per line (lines
 /// without `resetsAt` still load). A snapshot row whose reported reset has passed is not stored:
 /// its reading belongs to a finished window. A sample is stored only when it is newer than the
-/// row's last one and either its value or reset changed or at least `minInterval` passed. Samples older than `maxAge` are dropped: on load (malformed lines too,
+/// row's last one and either its value or reset changed (beyond `LimitSample.resetTolerance`) or at least `minInterval` passed. Samples older than `maxAge` are dropped: on load (malformed lines too,
 /// rewriting the file when anything was dropped) and while running, rewriting the file once
 /// `compactionThreshold` samples have expired.
 ///
@@ -90,7 +90,7 @@ actor LimitSampleStore: LimitSampleRecording {
         var samples = samplesByKey?[key] ?? []
         if let last = samples.last {
             guard sample.t > last.t else { return false }
-            let changed = abs(sample.percent - last.percent) > 1e-9 || sample.resetsAt != last.resetsAt
+            let changed = abs(sample.percent - last.percent) > 1e-9 || Self.resetChanged(from: last.resetsAt, to: sample.resetsAt)
             guard changed || sample.t.timeIntervalSince(last.t) >= minInterval else { return false }
         }
         guard sample.t >= cutoff else { return false }
@@ -103,6 +103,16 @@ actor LimitSampleStore: LimitSampleRecording {
             append(Record(provider: provider, label: label, t: sample.t, percent: sample.percent, resetsAt: sample.resetsAt))
         }
         return true
+    }
+
+    /// A reset appearing or vanishing is a change; a reported one only when it moved beyond
+    /// `LimitSample.resetTolerance` (jitter between polls must not defeat `minInterval`).
+    private static func resetChanged(from old: Date?, to new: Date?) -> Bool {
+        switch (old, new) {
+        case (nil, nil): false
+        case let (old?, new?): !LimitSample.sameWindow(old, new)
+        default: true
+        }
     }
 
     private var cutoff: Date { now().addingTimeInterval(-maxAge) }

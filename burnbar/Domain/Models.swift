@@ -81,11 +81,19 @@ nonisolated struct LimitSample: Codable, Hashable, Sendable {
         self.resetsAt = resetsAt
     }
 
+    /// How far a reported reset may jitter between readings of the same window.
+    static let resetTolerance: TimeInterval = 60
+
+    /// Whether two reported resets identify the same window (within `resetTolerance`).
+    static func sameWindow(_ a: Date, _ b: Date) -> Bool {
+        abs(a.timeIntervalSince(b)) <= resetTolerance
+    }
+
     /// Whether the sample was taken in the window ending at `reset`: an unknown reset counts
-    /// as the same window; a reported one may jitter by up to a minute between readings.
+    /// as the same window; a reported one may jitter by up to `resetTolerance` between readings.
     func belongs(toWindowEndingAt reset: Date) -> Bool {
         guard let resetsAt else { return true }
-        return abs(resetsAt.timeIntervalSince(reset)) <= 60
+        return Self.sameWindow(resetsAt, reset)
     }
 }
 
