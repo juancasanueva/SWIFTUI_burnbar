@@ -29,6 +29,7 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
 - [x] T3 Setup screen (three columns, SETUP/DONE toggle, launch at login). Route: delegated (multi-file).
 - [x] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated. (Introduced the menu bar label update loop fixed in T5.)
 - [x] T5 Fix menu bar label update loop. Route: delegated (writer trigger: 2+ non-trivial files).
+- [x] T6 Theme setting applies to the panel. Route: inline (two small edits + one test file).
 
 ## Acceptance criteria
 - Every Setup control changes visible behavior and survives relaunch.
@@ -70,5 +71,8 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
   - Second report ("`defaults write com.juancasanueva.burnbar settings.emberMotion -bool false` did not turn ember off"): not an app bug. A leftover sandbox container `~/Library/Containers/com.juancasanueva.burnbar` (from an earlier sandboxed template build) makes the `defaults` tool write there, while the unsandboxed app reads `~/Library/Preferences/com.juancasanueva.burnbar.plist`. A probe in the original build printed `raw=nil`. Writing the explicit plist path (`defaults write ~/Library/Preferences/com.juancasanueva.burnbar ...`) works; the round trip is covered by `aStoredEmberMotionOffReachesThePublishedState` / `togglingEmberMotionRepublishes`.
   - Verification: `xcodebuild ... -only-testing:burnbarTests test`: TEST SUCCEEDED. Runtime (scratch derived data, BUILD SUCCEEDED): ember off 0.0% CPU, RSS ~141 MB flat; ember on 5.6–9.7% CPU, RSS ~145–149 MB flat (was 100% CPU and growing). Status item present (AX label "Claude limits unavailable, Codex 0% weekly, …", 197 pt wide) but positioned off-screen (y = -27, hidden by a menu bar manager), so a screenshot could not show the strip.
 
+- T5 review: native review over daa2b3b..51e447a approved and acknowledged (reviewed boundary 51e447a). User confirmed the app works.
+- T6 done (route: inline), commit d0dc58f. The theme picker had no effect: a `MenuBarExtra` window ignores `.preferredColorScheme`, so `\.colorScheme` stayed the system scheme and `CockpitChrome` kept the system palette. Fix: `ThemePreference.resolved(system:)`; `PanelView` reads the system scheme from the environment and injects `.environment(\.colorScheme, theme.resolved(system:))`. Test-first: `ThemePreferenceTests` failed to compile (missing `resolved`), then GREEN; full `burnbarTests` TEST SUCCEEDED. Assess: medium, under budget (35 lines). User confirmed the theme switches.
+
 ## Next step
-Remove the stale sandbox container if `defaults` should target the app's real domain (user decision). Manual check in the running app (ember breathing/flash in the menu bar, Reduce Motion, Setup toggle), then push/PR (user decision).
+Delivered as one PR (`size:exception`, user asked for a single PR). Optional: remove the stale sandbox container `~/Library/Containers/com.juancasanueva.burnbar` (user decision).
