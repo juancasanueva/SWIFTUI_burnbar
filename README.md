@@ -8,10 +8,16 @@ It is a SwiftUI port of [burnbar](https://github.com/nixfred/burnbar), the Omarc
 
 ## What it does
 
-- **Heat strip** in the menu bar: one lane per provider, 12 buckets of 30 minutes covering the last 6 hours. Colour shows token volume.
+- **Heat strip** in the menu bar: one lane per enabled provider, made of heat cells covering a trailing window (6 hours in 12 cells of 30 minutes by default; both are configurable). Colour shows token volume.
+- **Ember motion**: live cells breathe with a subtle flicker, and a lane flashes briefly when new burn lands in its latest cell. It can be turned off in Setup and always honours Reduce Motion.
 - **Weekly gauges** at the ends of each lane: green, then yellow from 75%, then red from 90%, pulsing at 90% and above.
 - **Advice chip**: one recommendation at a time, such as `CLAUDE REST 8H`, `CLAUDE 5-HOUR OUT IN 40M`, `USE CODEX NEXT` or `SPENT`. Click it to dismiss it until things get worse.
-- **Cockpit panel**: per-provider pace verdict (ON TRACK, AT PACE, OVER, WAY OVER), burndown chart, burn rates, token mix, usage by model and the signed-in account.
+- **Cockpit panel**: a wide, dark, monospaced panel with header totals, an advice banner and one card per subscription side by side. Each card has a lane-coloured top rule, a pace verdict (ON TRACK, AT PACE, OVER, WAY OVER), a headline that flips between Budget and Tokens when clicked, a burndown chart, plan windows, burn rates, token mix, usage by model and the signed-in account. Cards glow when they are over pace, burning or spent (configurable).
+- **Setup screen**: click SETUP in the cockpit header to open it; DONE or Esc returns to the cockpit. Settings are saved and survive relaunch:
+  - **Subscriptions**: show or hide Claude and Codex (card and lane), account names, and reading Claude's plan usage.
+  - **Strip**: window (1h, 3h, 6h, 12h, 1d), cells per lane (8, 12, 18, 24), refresh (5s to 60s), limits refresh (2m to 30m), ember motion, and suggesting the next subscription.
+  - **Cards**: theme (dark, light, system), headline (Budget or Tokens), when cards glow, 5-hour session windows, and launch at login. macOS may ask you to approve the login item in System Settings › General › Login Items.
+  - **Warnings**: warn me again, which brings back dismissed advice.
 
 burnbar counts tokens; it does not estimate dollar cost. Pace compares the percent of each plan window you have used with the percent of the window that has elapsed.
 

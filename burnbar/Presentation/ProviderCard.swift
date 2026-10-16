@@ -88,6 +88,8 @@ nonisolated struct LimitLine: Hashable, Sendable, Identifiable {
     let label: String
     /// Nil when the row is unknown.
     let percent: Double?
+    /// Share of the window elapsed: where an even burn would be now. Nil when unknown.
+    let elapsed: Double?
     let gauge: GaugeLevel?
     let resetsAt: Date
     let isProjectedReset: Bool
@@ -110,6 +112,7 @@ nonisolated struct LimitLine: Hashable, Sendable, Identifiable {
         let pace = state.pace
         label = state.row.label
         percent = pace?.percent
+        elapsed = pace?.elapsed
         gauge = pace?.gauge
         resetsAt = state.row.resetsAt
         isProjectedReset = pace?.isProjectedReset ?? false
@@ -117,16 +120,39 @@ nonisolated struct LimitLine: Hashable, Sendable, Identifiable {
     }
 }
 
+/// Display preferences applied when mapping provider state to cards.
+nonisolated struct CardOptions: Hashable, Sendable {
+    /// Cards name the signed-in account.
+    var showsAccountName = true
+    /// Cards list 5-hour rows; off, only a 5-hour row about to run out is listed.
+    var showsFiveHourWindows = true
+
+    func shows(_ limit: LimitRowState) -> Bool {
+        guard !showsFiveHourWindows, limit.row.windowDuration == 5 * 3600 else { return true }
+        return limit.pace.map(AdviceEngine.isFiveHourRunningOut) ?? false
+    }
+}
+
 /// Everything one provider card shows.
 nonisolated struct ProviderCard: Hashable, Sendable, Identifiable {
     let provider: Provider
+    /// Nil when unknown or when account names are hidden.
     let accountLabel: String?
     /// Verdict of the burndown row; nil when no limit is known.
     let verdict: Verdict?
     /// One line of what to do now, from the pace rules.
     let instruction: String
+    /// The limit rows the options show.
     let lines: [LimitLine]
     let burndown: Burndown?
+    /// Spent share, name and reset of the burndown row; nil when no limit is known.
+    let budget: BudgetSummary?
+    /// The coloured status line under the title, e.g. "BANKED 51%".
+    let statusLine: CardStatus
+    /// How fast to spend from here, e.g. "Spend up to 1.5% an hour and it lasts to the reset".
+    let spendAdvice: String?
+    /// Heat per strip bucket, oldest first, for the burn histogram.
+    let buckets: [Int]
     let rate5m: Double
     let rate60m: Double
     let split: TokenSplit
@@ -145,10 +171,10 @@ nonisolated struct ProviderCard: Hashable, Sendable, Identifiable {
     var rate5mText: String { CockpitFormat.rate(rate5m) }
     var rate60mText: String { CockpitFormat.rate(rate60m) }
 
-    init(state: ProviderState, now: Date) {
+    init(state: ProviderState, now: Date, options: CardOptions = CardOptions()) {
         provider = state.provider
-        accountLabel = state.account?.label
-        lines = state.limits.map { LimitLine($0, now: now) }
+        accountLabel = options.showsAccountName ? state.account?.label : nil
+        lines = state.limits.filter(options.shows).map { LimitLine($0, now: now) }
 
         let headline = Self.headline(state.limits)
         burndown = headline.map { row in
@@ -156,8 +182,13 @@ nonisolated struct ProviderCard: Hashable, Sendable, Identifiable {
         }
         verdict = headline?.pace?.verdict
         instruction = Self.instruction(headline: headline?.pace, fiveHour: state.fiveHour, status: state.status, now: now)
+        budget = headline?.pace.map { BudgetSummary(pace: $0, now: now) }
+        statusLine = CardStatus(headline: headline?.pace, fiveHour: state.fiveHour, status: state.status,
+                                hasError: state.hasError, now: now)
+        spendAdvice = headline?.pace.map(Self.spendAdvice)
 
         let lane = state.lane
+        buckets = lane.buckets
         rate5m = lane.rate5m
         rate60m = lane.rate60m
         split = lane.split
@@ -202,14 +233,19 @@ nonisolated struct CockpitHeader: Hashable, Sendable {
     let turns: Int
     let sessions: Int
     let updatedAt: Date?
+    /// The trailing window the totals cover.
+    let window: TimeInterval
 
     var tokensText: String { CockpitFormat.tokens(tokens) }
+    /// E.g. "6 h", "1 d".
+    var windowLabel: String { CockpitFormat.window(window) }
 
     init(state: UsageViewState) {
         tokens = state.summary.totalHeat
         turns = state.summary.turns
         sessions = state.summary.sessions
         updatedAt = state.updatedAt
+        window = state.summary.window
     }
 }
 
@@ -222,6 +258,12 @@ nonisolated enum CockpitFormat {
         if minutes < 60 { return "\(max(1, minutes))m" }
         if minutes < 24 * 60 { return "\(minutes / 60)h " + String(format: "%02dm", minutes % 60) }
         return "\(minutes / (24 * 60))d \((minutes % (24 * 60)) / 60)h"
+    }
+
+    /// Whole days from a day up, else whole hours: "1 d", "12 h", "1 h".
+    static func window(_ interval: TimeInterval) -> String {
+        let hours = Int((interval / 3600).rounded())
+        return hours >= 24 && hours % 24 == 0 ? "\(hours / 24) d" : "\(hours) h"
     }
 
     /// "999", "1.5K", "2.5M".

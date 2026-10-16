@@ -50,6 +50,9 @@ extension RGBHex {
 }
 
 extension Lane {
+    /// The lane's accent for text and lines on a dark background: warm, part way to hot.
+    var accent: RGBHex { warm.mix(hot, 0.4) }
+
     /// Colour of one heat cell relative to the hottest cell: cold when idle, cold → warm over
     /// the first half of `max`, warm → hot over the second half.
     func color(heat: Int, max: Int) -> RGBHex {

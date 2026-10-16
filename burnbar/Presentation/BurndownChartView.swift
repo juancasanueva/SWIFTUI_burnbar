@@ -6,59 +6,64 @@
 import Charts
 import SwiftUI
 
-/// Used share over the window: actual samples (solid), the ideal straight burn from 0% at the
-/// window start to 100% at the reset (dashed grey) and the projection along the fitted rate
-/// (dashed lane colour), with a rule at now. VoiceOver reads the burndown's summary.
+/// Used share over the window on a dark plot: the even-pace diagonal from 0% at the window
+/// start to 100% at the reset (dashed grey), actual samples (solid lane colour, a dot at now),
+/// the projection along the fitted rate (dashed lane colour) and a rule at now. VoiceOver reads
+/// the burndown's summary.
 struct BurndownChartView: View {
     let burndown: Burndown
     let lane: Color
+
+    @Environment(\.cockpitPalette) private var palette
 
     private enum Series: String {
         case actual = "Actual", ideal = "Ideal", projected = "Projected"
     }
 
+    private var title: String {
+        BudgetSummary.name(window: burndown.pace.row.windowDuration, label: burndown.label).uppercased()
+            + (burndown.isProjectedReset ? " · NEW WINDOW (ASSUMED)" : "")
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(burndown.label + (burndown.isProjectedReset ? " · new window (assumed)" : ""))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Chart {
-                line(burndown.ideal, .ideal)
-                    .foregroundStyle(.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                if let projected = burndown.projected {
-                    line(projected, .projected)
-                        .foregroundStyle(lane.opacity(0.7))
-                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                }
-                line(burndown.actual, .actual)
+        Chart {
+            line(burndown.ideal, .ideal)
+                .foregroundStyle(palette.tertiary)
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            if let projected = burndown.projected {
+                line(projected, .projected)
+                    .foregroundStyle(lane.opacity(0.75))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            line(burndown.actual, .actual)
+                .foregroundStyle(lane)
+                .lineStyle(StrokeStyle(lineWidth: 2))
+            if let now = burndown.actual.last {
+                RuleMark(x: .value("Now", now.t))
+                    .foregroundStyle(palette.tertiary)
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                PointMark(x: .value("Time", now.t), y: .value("Used", now.percent * 100))
                     .foregroundStyle(lane)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
-                if let now = burndown.actual.last {
-                    RuleMark(x: .value("Now", now.t))
-                        .foregroundStyle(.tertiary)
-                        .lineStyle(StrokeStyle(lineWidth: 0.5))
-                }
+                    .symbolSize(30)
             }
-            .chartXScale(domain: burndown.windowStart...burndown.resetsAt)
-            .chartYScale(domain: 0...100)
-            .chartYAxis {
-                AxisMarks(values: [0, 50, 100]) { value in
-                    AxisGridLine()
-                    AxisValueLabel { Text("\(value.as(Int.self) ?? 0)%") }
-                }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                    AxisGridLine()
-                    AxisValueLabel(format: burndown.pace.row.windowDuration > 36 * 3600
-                                   ? .dateTime.weekday(.abbreviated) : .dateTime.hour())
-                }
-            }
-            .frame(height: 90)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(burndown.accessibilitySummary)
         }
+        .chartXScale(domain: burndown.windowStart...burndown.resetsAt)
+        .chartYScale(domain: 0...100)
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartPlotStyle { plot in
+            plot.background(palette.plot)
+        }
+        .overlay(alignment: .topLeading) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(palette.secondary)
+                .padding(5)
+        }
+        .frame(height: 88)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(burndown.accessibilitySummary)
     }
 
     /// A line series; `series` keeps the three lines from joining. Points are identified by
@@ -77,9 +82,10 @@ struct BurndownChartView: View {
 #if DEBUG
 #Preview {
     if let burndown = CockpitPreview.cards.first?.burndown {
-        BurndownChartView(burndown: burndown, lane: Color(LanePalette.claude.warm))
+        BurndownChartView(burndown: burndown, lane: Color(LanePalette.claude.accent))
             .padding()
-            .frame(width: 340)
+            .frame(width: 400)
+            .cockpitChrome()
     }
 }
 #endif

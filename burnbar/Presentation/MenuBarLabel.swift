@@ -9,32 +9,39 @@ import SwiftUI
 /// The `MenuBarExtra` label: the heat strip rendered into a non-template image, because the
 /// menu bar draws label views as monochrome templates and would drop the lane colours.
 ///
-/// Gauges at or above 90% pulse with a slow opacity wave (re-rendered 4 times a second, only
-/// while pulsing); with Reduce Motion on they stay still.
+/// The label is a pure function of observed values: no `TimelineView`, `@State` or `.onChange`,
+/// which in a `MenuBarExtra` label re-evaluate on every status-item update and re-rendered the
+/// image in an endless loop. Motion comes from `StripAnimationClock`: gauges at or above 90%
+/// pulse with a slow opacity wave, and with the Ember motion setting on and live cells in a lane
+/// the cells breathe and a lane flashes when its latest bucket grows (`UsageViewState.flashStarts`).
+/// The clock's `date` is read only while it is active, so a still strip never re-renders on its own.
 struct MenuBarLabel: View {
     let store: UsageStore
+    let clock: StripAnimationClock
 
-    private static let pulseStep: TimeInterval = 0.25
     private static let pulsePeriod: TimeInterval = 2
 
     var body: some View {
         let state = store.state
-        if Self.pulses(state), !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            TimelineView(.periodic(from: .now, by: Self.pulseStep)) { context in
-                StripImage(state: state, pulseOpacity: Self.pulseOpacity(at: context.date))
-            }
-        } else {
-            StripImage(state: state, pulseOpacity: 1)
+        switch clock.activity {
+        case .still:
+            StripImage(state: state, pulseOpacity: 1, ember: .still)
+        case .pulse:
+            StripImage(state: state, pulseOpacity: Self.pulseOpacity(at: clock.date), ember: .still)
+        case .ember:
+            let date = clock.date
+            StripImage(
+                state: state,
+                pulseOpacity: StripAnimationClock.pulses(state) ? Self.pulseOpacity(at: date) : 1,
+                ember: EmberFrame(date: date, isActive: true, flashStarts: state.flashStarts)
+            )
         }
     }
 
-    private static func pulses(_ state: UsageViewState) -> Bool {
-        state.providers.contains { $0.weekly.map { GaugeLevel.pulses(percent: $0.percent) } ?? false }
-    }
-
     /// The strip as a non-template image at `scale`; nil if rendering fails.
-    static func image(for state: UsageViewState, pulseOpacity: Double = 1, scale: CGFloat) -> NSImage? {
-        let renderer = ImageRenderer(content: HeatStripView(state: state, pulseOpacity: pulseOpacity))
+    static func image(for state: UsageViewState, pulseOpacity: Double = 1, ember: EmberFrame = .still,
+                      scale: CGFloat) -> NSImage? {
+        let renderer = ImageRenderer(content: HeatStripView(state: state, pulseOpacity: pulseOpacity, ember: ember))
         renderer.scale = scale
         guard let image = renderer.nsImage else { return nil }
         image.isTemplate = false
@@ -51,12 +58,13 @@ struct MenuBarLabel: View {
 private struct StripImage: View {
     let state: UsageViewState
     let pulseOpacity: Double
+    let ember: EmberFrame
 
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         Group {
-            if let image = MenuBarLabel.image(for: state, pulseOpacity: pulseOpacity, scale: displayScale) {
+            if let image = MenuBarLabel.image(for: state, pulseOpacity: pulseOpacity, ember: ember, scale: displayScale) {
                 Image(nsImage: image)
             } else {
                 Text("BURNBAR")

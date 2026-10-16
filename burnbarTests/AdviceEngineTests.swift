@@ -159,4 +159,40 @@ struct AdviceEngineTests {
         #expect(advise([claude, codex]) == .useNext(.codex))
         #expect(AdviceEngine.isBlocked(codex, now: now) == false)
     }
+
+    // MARK: Suggestions off
+
+    private func warn(_ subs: [SubscriptionPace], current: Provider? = .claude) -> Advice? {
+        AdviceEngine.advise(subs, current: current, now: now, suggestingNext: false)
+    }
+
+    @Test func noSuggestionWithoutAWarning() {
+        let subs = [sub(.claude, weeklyPercent: 0.40, weeklyElapsed: 0.50), sub(.codex, weeklyPercent: 0.30, weeklyElapsed: 0.50)]
+        #expect(advise(subs) == .useNext(.codex))
+        #expect(warn(subs) == nil)
+    }
+
+    @Test func noUseNowWithoutSuggestions() {
+        let subs = [sub(.claude, weeklyPercent: 0.40, weeklyElapsed: 0.50), sub(.codex, weeklyPercent: 0.30, weeklyElapsed: 0.95)]
+        #expect(advise(subs) == .useNow(.codex))
+        #expect(warn(subs) == nil)
+    }
+
+    @Test func anOverPaceSubRestsInsteadOfSwitching() {
+        let subs = [sub(.claude, weeklyPercent: 0.8, weeklyElapsed: 0.5), sub(.codex, weeklyPercent: 0.2, weeklyElapsed: 0.5)]
+        guard case .rest(.claude, _) = warn(subs) else {
+            Issue.record("expected REST CLAUDE, got \(String(describing: warn(subs)))")
+            return
+        }
+    }
+
+    @Test func spentStillShowsWithoutSuggestions() {
+        let blocked = pace(percent: 0.9, elapsed: 0.5, window: fiveHours)
+        #expect(warn([sub(.claude, fiveHour: blocked, weeklyPercent: 0.1, weeklyElapsed: 0.5)]) == .spent)
+    }
+
+    @Test func aFiveHourRowRunsOutAtNinetyPercentOrWhenDryBeforeItsReset() {
+        #expect(AdviceEngine.isFiveHourRunningOut(pace(percent: 0.9, elapsed: 0.5, window: fiveHours)))
+        #expect(!AdviceEngine.isFiveHourRunningOut(calmFiveHour))
+    }
 }
