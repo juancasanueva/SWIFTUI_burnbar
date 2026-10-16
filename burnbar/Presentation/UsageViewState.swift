@@ -61,6 +61,18 @@ nonisolated struct UsageViewState: Hashable, Sendable {
     var cardOptions = CardOptions()
     /// Stored advice dismissals ("Warn me again" clears them).
     var dismissedAdviceCount = 0
+    /// The Ember motion setting, mirrored so the strip's motion follows published state only.
+    var emberMotion = true
+    /// When each lane's latest new-burn flash started (its newest bucket grew).
+    var flashStarts: [Provider: Date] = [:]
+
+    /// Each healthy lane's newest bucket, compared across snapshots to detect new burn.
+    var latestHeat: [Provider: Int] {
+        Dictionary(uniqueKeysWithValues: providers.compactMap { provider in
+            guard !provider.hasError, let latest = provider.lane.buckets.last else { return nil }
+            return (provider.provider, latest)
+        })
+    }
 
     var hasDismissedAdvice: Bool { dismissedAdviceCount > 0 }
 

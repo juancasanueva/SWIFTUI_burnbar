@@ -27,7 +27,8 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
 - [x] T1 Settings model + store wiring (provider toggles, strip window/cells, refresh intervals, suggest next sub, 5-hour windows, account names, read Claude limits, warn me again). Route: delegated (multi-file).
 - [x] T2 Cockpit redesign (wide dark panel, header, advice banner, columns of cards, headline budget/tokens, glow, footer, theme). Route: delegated (multi-file).
 - [x] T3 Setup screen (three columns, SETUP/DONE toggle, launch at login). Route: delegated (multi-file).
-- [x] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated.
+- [x] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated. (Introduced the menu bar label update loop fixed in T5.)
+- [x] T5 Fix menu bar label update loop. Route: delegated (writer trigger: 2+ non-trivial files).
 
 ## Acceptance criteria
 - Every Setup control changes visible behavior and survives relaunch.
@@ -62,6 +63,12 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
   - README: cockpit, Setup screen by box, login item approval, ember motion and Reduce Motion, configurable window/cells.
   - Verification: `xcodebuild ... -only-testing:burnbarTests test`: TEST SUCCEEDED, 412 passed, 0 failed, 2 skipped (opt-in renders). `xcodebuild ... build`: BUILD SUCCEEDED.
   - Real menu-bar animation not yet checked by eye.
+  - Regression: the `TimelineView` (and `@State`/`.onChange`) inside the `MenuBarExtra` label caused an endless status-item update loop (100% CPU, ~1 GB in 15 s, panel would not open, bar uncoloured). Fixed in T5.
+- T5 done (route: delegated, writer trigger: 2+ non-trivial files). Test-first: RED observed as compile failures in `StripAnimationClockTests` (missing `StripAnimationClock`) and `UsageStoreSettingsTests` (missing `flashStarts`), then GREEN.
+  - Root cause: in a `MenuBarExtra` label a `TimelineView` re-evaluates its content on every status-item update; each evaluation rendered a new `NSImage` through `ImageRenderer`, `setImage` scheduled another update (`MenuBarExtraController.updateButton` → `NSStatusBarButton setImage:`), forever. The pre-T4 pulse used the same pattern (latent).
+  - Fix: the label is a pure function of `store.state` and `StripAnimationClock` (new, `@Observable`): no `TimelineView`, `@State` or `.onChange`. The clock ticks a `Task` at `EmberMotion.frameInterval` (ember) or 0.25 s (pulse) only while active and runs no task when still; `StripAnimationClock.activity(...)` decides (ember setting && live cells, else pulsing gauges; Reduce Motion stills both, read via `NSWorkspace` and its accessibility-options notification). The app calls `clock.follow(store)` (an `Observations` loop) only when not inert. Flash detection moved into `UsageStore.publish` (`UsageViewState.flashStarts`, no flash on the first publish). `UsageViewState.emberMotion` mirrors the setting. Ember frame step raised from 0.1 s to 0.15 s to keep CPU under 10%.
+  - Second report ("`defaults write com.juancasanueva.burnbar settings.emberMotion -bool false` did not turn ember off"): not an app bug. A leftover sandbox container `~/Library/Containers/com.juancasanueva.burnbar` (from an earlier sandboxed template build) makes the `defaults` tool write there, while the unsandboxed app reads `~/Library/Preferences/com.juancasanueva.burnbar.plist`. A probe in the original build printed `raw=nil`. Writing the explicit plist path (`defaults write ~/Library/Preferences/com.juancasanueva.burnbar ...`) works; the round trip is covered by `aStoredEmberMotionOffReachesThePublishedState` / `togglingEmberMotionRepublishes`.
+  - Verification: `xcodebuild ... -only-testing:burnbarTests test`: TEST SUCCEEDED. Runtime (scratch derived data, BUILD SUCCEEDED): ember off 0.0% CPU, RSS ~141 MB flat; ember on 5.6–9.7% CPU, RSS ~145–149 MB flat (was 100% CPU and growing). Status item present (AX label "Claude limits unavailable, Codex 0% weekly, …", 197 pt wide) but positioned off-screen (y = -27, hidden by a menu bar manager), so a screenshot could not show the strip.
 
 ## Next step
-Manual check in the running app (ember breathing/flash in the menu bar, Reduce Motion, Setup toggle), then push/PR (user decision).
+Remove the stale sandbox container if `defaults` should target the app's real domain (user decision). Manual check in the running app (ember breathing/flash in the menu bar, Reduce Motion, Setup toggle), then push/PR (user decision).

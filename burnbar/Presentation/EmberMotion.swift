@@ -9,8 +9,8 @@ import Foundation
 /// lane flashes briefly when new burn lands in its latest bucket. Pure math, so the label only
 /// has to supply the clock and the previous snapshot.
 nonisolated enum EmberMotion {
-    /// Frame step while embers move: 10 fps keeps the re-rendered menu bar image cheap.
-    static let frameInterval: TimeInterval = 0.1
+    /// Frame step while embers move: about 7 fps keeps the re-rendered menu bar image cheap.
+    static let frameInterval: TimeInterval = 0.15
     /// Lowest opacity a breathing cell reaches.
     static let minimumIntensity = 0.7
     /// How long a new-burn flash takes to fade out.

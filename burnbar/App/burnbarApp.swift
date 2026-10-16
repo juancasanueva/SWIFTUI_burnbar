@@ -10,12 +10,17 @@ import SwiftUI
 struct burnbarApp: App {
     @State private var store: UsageStore
     @State private var launchAtLogin: LaunchAtLoginController
+    @State private var clock: StripAnimationClock
 
     init() {
         let settings = BurnbarSettings()
         let store = Self.isInert ? UsageStore.inert(settings: settings) : UsageStore.live(settings: settings)
         store.start()
         _store = State(initialValue: store)
+        // The strip's motion; inert runs keep it still, with no task.
+        let clock = StripAnimationClock()
+        if !Self.isInert { clock.follow(store) }
+        _clock = State(initialValue: clock)
         // Inert runs never touch the real login item.
         let loginItem: any LoginItemControlling = Self.isInert
             ? InMemoryLoginItem(isEnabled: settings.launchAtLogin) : SystemLoginItem()
@@ -36,7 +41,7 @@ struct burnbarApp: App {
         MenuBarExtra {
             PanelView(store: store, launchAtLogin: launchAtLogin)
         } label: {
-            MenuBarLabel(store: store)
+            MenuBarLabel(store: store, clock: clock)
         }
         .menuBarExtraStyle(.window)
     }

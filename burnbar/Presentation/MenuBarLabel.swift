@@ -9,56 +9,33 @@ import SwiftUI
 /// The `MenuBarExtra` label: the heat strip rendered into a non-template image, because the
 /// menu bar draws label views as monochrome templates and would drop the lane colours.
 ///
-/// Gauges at or above 90% pulse with a slow opacity wave (re-rendered 4 times a second, only
-/// while pulsing). With the Ember motion setting on and live cells in a lane, the image is
-/// re-rendered at `EmberMotion.frameInterval` so cells breathe and a lane flashes when its latest
-/// bucket grows. With Reduce Motion on everything stays still.
+/// The label is a pure function of observed values: no `TimelineView`, `@State` or `.onChange`,
+/// which in a `MenuBarExtra` label re-evaluate on every status-item update and re-rendered the
+/// image in an endless loop. Motion comes from `StripAnimationClock`: gauges at or above 90%
+/// pulse with a slow opacity wave, and with the Ember motion setting on and live cells in a lane
+/// the cells breathe and a lane flashes when its latest bucket grows (`UsageViewState.flashStarts`).
+/// The clock's `date` is read only while it is active, so a still strip never re-renders on its own.
 struct MenuBarLabel: View {
     let store: UsageStore
+    let clock: StripAnimationClock
 
-    /// When each lane's latest new-burn flash started.
-    @State private var flashStarts: [Provider: Date] = [:]
-
-    private static let pulseStep: TimeInterval = 0.25
     private static let pulsePeriod: TimeInterval = 2
 
     var body: some View {
         let state = store.state
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let pulsing = Self.pulses(state) && !reduceMotion
-        let ember = EmberMotion.isAllowed(enabled: store.settings.emberMotion, reduceMotion: reduceMotion)
-            && EmberMotion.hasLiveCells(state.providers.map(\.lane.buckets))
-        Group {
-            if pulsing || ember {
-                TimelineView(.periodic(from: .now, by: ember ? EmberMotion.frameInterval : Self.pulseStep)) { context in
-                    StripImage(
-                        state: state,
-                        pulseOpacity: pulsing ? Self.pulseOpacity(at: context.date) : 1,
-                        ember: EmberFrame(date: context.date, isActive: ember, flashStarts: flashStarts)
-                    )
-                }
-            } else {
-                StripImage(state: state, pulseOpacity: 1, ember: .still)
-            }
+        switch clock.activity {
+        case .still:
+            StripImage(state: state, pulseOpacity: 1, ember: .still)
+        case .pulse:
+            StripImage(state: state, pulseOpacity: Self.pulseOpacity(at: clock.date), ember: .still)
+        case .ember:
+            let date = clock.date
+            StripImage(
+                state: state,
+                pulseOpacity: StripAnimationClock.pulses(state) ? Self.pulseOpacity(at: date) : 1,
+                ember: EmberFrame(date: date, isActive: true, flashStarts: state.flashStarts)
+            )
         }
-        .onChange(of: Self.latestHeat(state)) { previous, current in
-            let now = Date()
-            for provider in EmberMotion.flashingLanes(previous: previous, current: current) {
-                flashStarts[provider] = now
-            }
-        }
-    }
-
-    /// Each healthy lane's newest bucket, compared across snapshots to detect new burn.
-    private static func latestHeat(_ state: UsageViewState) -> [Provider: Int] {
-        Dictionary(uniqueKeysWithValues: state.providers.compactMap { provider in
-            guard !provider.hasError, let latest = provider.lane.buckets.last else { return nil }
-            return (provider.provider, latest)
-        })
-    }
-
-    private static func pulses(_ state: UsageViewState) -> Bool {
-        state.providers.contains { $0.weekly.map { GaugeLevel.pulses(percent: $0.percent) } ?? false }
     }
 
     /// The strip as a non-template image at `scale`; nil if rendering fails.

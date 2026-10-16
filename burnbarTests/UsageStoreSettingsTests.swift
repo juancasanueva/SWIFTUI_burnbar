@@ -237,4 +237,46 @@ final class UsageStoreSettingsTests {
         #expect(!sut.state.hasDismissedAdvice)
         #expect(defaults.string(forKey: UsageStore.DefaultsKey.dismissedIdentity) == nil)
     }
+
+    // MARK: Ember motion
+
+    @Test func aStoredEmberMotionOffReachesThePublishedState() async {
+        defaults.set(false, forKey: BurnbarSettings.Key.emberMotion)
+        let sut = UsageStore(collectors: [:], limits: [:], samples: StubSampleStore(), accounts: StubAccounts(),
+                             defaults: defaults, now: { now })
+        await sut.collectUsage()
+        #expect(sut.settings.emberMotion == false)
+        #expect(sut.state.emberMotion == false)
+    }
+
+    @Test func togglingEmberMotionRepublishes() async {
+        let sut = store()
+        await sut.collectUsage()
+        #expect(sut.state.emberMotion)
+
+        settings.emberMotion = false
+        await sut.settingsDidChange()
+        #expect(sut.state.emberMotion == false)
+        #expect(defaults.object(forKey: BurnbarSettings.Key.emberMotion) as? Bool == false)
+    }
+
+    // MARK: New-burn flashes
+
+    @Test func aLaneFlashesWhenItsLatestBucketGrows() async {
+        claudeCollector.set([event(.claude, at: -600, input: 500)])
+        codexCollector.set([event(.codex, at: -600, input: 50)])
+        let sut = store()
+        await sut.collectUsage()
+        #expect(sut.state.flashStarts.isEmpty)
+
+        clock.advance(5)
+        claudeCollector.set([event(.claude, at: -600, input: 500), event(.claude, at: 0, input: 200)])
+        await sut.collectUsage()
+        #expect(sut.state.flashStarts == [.claude: now.addingTimeInterval(5)])
+
+        // Nothing new: the recorded start stays, no new lane flashes.
+        clock.advance(5)
+        await sut.collectUsage()
+        #expect(sut.state.flashStarts == [.claude: now.addingTimeInterval(5)])
+    }
 }

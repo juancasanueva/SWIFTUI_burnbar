@@ -291,15 +291,24 @@ final class UsageStore {
         )
         let isAdviceDismissed = isDismissed(advice)
 
-        state = UsageViewState(
+        var next = UsageViewState(
             summary: summary,
             providers: providers,
             advice: advice,
             isAdviceDismissed: isAdviceDismissed,
             updatedAt: now,
             cardOptions: settings.cardOptions,
-            dismissedAdviceCount: defaults.string(forKey: DefaultsKey.dismissedIdentity) == nil ? 0 : 1
+            dismissedAdviceCount: defaults.string(forKey: DefaultsKey.dismissedIdentity) == nil ? 0 : 1,
+            emberMotion: settings.emberMotion
         )
+        // A lane flashes when its newest bucket grew since the last publish (not on the first one).
+        let latestHeat = next.latestHeat
+        let previous = state.updatedAt == nil ? [:] : state.latestHeat
+        next.flashStarts = state.flashStarts.filter { latestHeat[$0.key] != nil }
+        for provider in EmberMotion.flashingLanes(previous: previous, current: latestHeat) {
+            next.flashStarts[provider] = now
+        }
+        state = next
     }
 
     private func providerState(_ provider: Provider, now: Date) -> ProviderState {

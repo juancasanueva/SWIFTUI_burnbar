@@ -162,7 +162,8 @@ final class BurnbarSettings {
     var storeInputs: StoreSettingsInputs {
         StoreSettingsInputs(enabledProviders: enabledProviders, readClaudeLimits: readClaudeLimits, grid: grid,
                             refreshInterval: refreshInterval, limitsRefreshInterval: limitsRefreshInterval,
-                            suggestNextSub: suggestNextSub, cardOptions: cardOptions)
+                            suggestNextSub: suggestNextSub, cardOptions: cardOptions,
+                            emberMotion: emberMotion)
     }
 
     private static func bool(_ defaults: UserDefaults, _ key: String, default value: Bool) -> Bool {
@@ -183,4 +184,5 @@ nonisolated struct StoreSettingsInputs: Hashable, Sendable {
     let limitsRefreshInterval: LimitsRefreshInterval
     let suggestNextSub: Bool
     let cardOptions: CardOptions
+    let emberMotion: Bool
 }
