@@ -104,7 +104,7 @@ struct CockpitHeaderView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("burnbar")
                     .font(.headline)
-                Text("\(header.tokensText) tokens · \(header.turns) turns · \(header.sessions) sessions (6 h)")
+                Text("\(header.tokensText) tokens · \(header.turns) turns · \(header.sessions) sessions (\(header.windowLabel))")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 if let updated = header.updatedAt {

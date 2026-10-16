@@ -33,8 +33,8 @@ nonisolated struct LaneUsage: Hashable, Sendable {
         return buckets.firstIndex(of: peakBucketHeat)
     }
 
-    static func empty(_ provider: Provider) -> LaneUsage {
-        LaneUsage(provider: provider, buckets: Array(repeating: 0, count: UsageAggregator.bucketCount),
+    static func empty(_ provider: Provider, cells: Int = UsageAggregator.bucketCount) -> LaneUsage {
+        LaneUsage(provider: provider, buckets: Array(repeating: 0, count: cells),
                   heat: 0, split: .zero, byModel: [], turns: 0, sessions: 0, rate5m: 0, rate60m: 0)
     }
 }
@@ -42,8 +42,13 @@ nonisolated struct LaneUsage: Hashable, Sendable {
 nonisolated struct UsageSummary: Hashable, Sendable {
     let bucketStarts: [Date]
     let lanes: [Provider: LaneUsage]
+    /// The trailing window the totals cover.
+    var window: TimeInterval = UsageAggregator.windowDuration
 
-    func lane(_ provider: Provider) -> LaneUsage { lanes[provider] ?? .empty(provider) }
+    /// An idle lane has as many cells as the grid (the standard count before any grid is known).
+    func lane(_ provider: Provider) -> LaneUsage {
+        lanes[provider] ?? .empty(provider, cells: bucketStarts.isEmpty ? UsageAggregator.bucketCount : bucketStarts.count)
+    }
 
     var totalHeat: Int { lanes.values.reduce(0) { $0 + $1.heat } }
     var turns: Int { lanes.values.reduce(0) { $0 + $1.turns } }
@@ -52,36 +57,51 @@ nonisolated struct UsageSummary: Hashable, Sendable {
     var peakBucketHeat: Int { lanes.values.map(\.peakBucketHeat).max() ?? 0 }
 }
 
+/// The heat strip's shape: a trailing window split into equal cells.
+nonisolated struct StripGrid: Hashable, Sendable {
+    let window: TimeInterval
+    let cells: Int
+
+    var bucketDuration: TimeInterval { window / Double(cells) }
+
+    /// 12 cells × 30 min over 6 hours.
+    static let standard = StripGrid(window: 360 * 60, cells: 12)
+}
+
 /// Buckets usage events into the bar's heat strip and headline numbers.
 ///
-/// - 12 buckets × 30 min aligned to the wall-clock grid; the last bucket contains `now`.
-/// - Headline totals cover the exact trailing 360 min, so they can include burn older than bucket 0.
+/// - `grid.cells` buckets of `grid.bucketDuration` aligned to the wall-clock grid (multiples of
+///   the bucket length since the epoch); the last bucket contains `now`. Standard: 12 × 30 min.
+/// - Headline totals cover the exact trailing `grid.window`, so they can include burn older than bucket 0.
 /// - Events after `now` are ignored.
 nonisolated enum UsageAggregator {
-    static let windowDuration: TimeInterval = 360 * 60
-    static let bucketCount = 12
-    static let bucketDuration: TimeInterval = 30 * 60
+    static let windowDuration: TimeInterval = StripGrid.standard.window
+    static let bucketCount = StripGrid.standard.cells
+    static let bucketDuration: TimeInterval = StripGrid.standard.bucketDuration
 
-    static func bucketStarts(now: Date) -> [Date] {
-        let t = now.timeIntervalSince1970
-        let last = (t / bucketDuration).rounded(.down) * bucketDuration
-        return (0..<bucketCount).map { i in
-            Date(timeIntervalSince1970: last - Double(bucketCount - 1 - i) * bucketDuration)
+    static func bucketStarts(now: Date, grid: StripGrid = .standard) -> [Date] {
+        let duration = grid.bucketDuration
+        let last = (now.timeIntervalSince1970 / duration).rounded(.down) * duration
+        return (0..<grid.cells).map { i in
+            Date(timeIntervalSince1970: last - Double(grid.cells - 1 - i) * duration)
         }
     }
 
-    static func summarize(_ events: [UsageEvent], now: Date) -> UsageSummary {
-        let starts = bucketStarts(now: now)
-        let windowStart = now.addingTimeInterval(-windowDuration)
+    static func summarize(_ events: [UsageEvent], now: Date, grid: StripGrid = .standard) -> UsageSummary {
+        let starts = bucketStarts(now: now, grid: grid)
+        let windowStart = now.addingTimeInterval(-grid.window)
         let inWindow = events.filter { $0.timestamp > windowStart && $0.timestamp <= now }
         let grouped = Dictionary(grouping: inWindow, by: \.provider)
         let lanes = Dictionary(uniqueKeysWithValues: grouped.map { provider, events in
-            (provider, lane(events, provider: provider, starts: starts, now: now))
+            (provider, lane(events, provider: provider, starts: starts, bucketDuration: grid.bucketDuration, now: now))
         })
-        return UsageSummary(bucketStarts: starts, lanes: lanes)
+        return UsageSummary(bucketStarts: starts, lanes: lanes, window: grid.window)
     }
 
-    private static func lane(_ events: [UsageEvent], provider: Provider, starts: [Date], now: Date) -> LaneUsage {
+    private static func lane(
+        _ events: [UsageEvent], provider: Provider, starts: [Date], bucketDuration: TimeInterval, now: Date
+    ) -> LaneUsage {
+        let bucketCount = starts.count
         var buckets = Array(repeating: 0, count: bucketCount)
         var split = TokenSplit.zero
         var models: [String: TokenSplit] = [:]

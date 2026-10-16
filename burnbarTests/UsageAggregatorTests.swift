@@ -91,4 +91,24 @@ struct UsageAggregatorTests {
         #expect(summary.sessions == 3)
         #expect(summary.turns == 5)
     }
+
+    // MARK: Custom grid
+
+    @Test func aCustomGridSetsTheBucketCountSpanAndWindow() {
+        let grid = StripGrid(window: 3 * hour, cells: 18)
+        let events = [event(at: -170 * minute, input: 10), event(at: -190 * minute, input: 1000)]
+        let summary = UsageAggregator.summarize(events, now: now, grid: grid)
+        #expect(grid.bucketDuration == 600)
+        #expect(summary.bucketStarts.count == 18)
+        #expect(summary.bucketStarts.last! <= now)
+        #expect(now.timeIntervalSince(summary.bucketStarts.last!) < 600)
+        #expect(summary.window == 3 * hour)
+        #expect(summary.lane(.claude).heat == 10)
+        #expect(summary.lane(.codex).buckets.count == 18)
+    }
+
+    @Test func theStandardGridIsSixHoursOfTwelveHalfHours() {
+        #expect(StripGrid.standard == StripGrid(window: 6 * hour, cells: 12))
+        #expect(StripGrid.standard.bucketDuration == 30 * minute)
+    }
 }

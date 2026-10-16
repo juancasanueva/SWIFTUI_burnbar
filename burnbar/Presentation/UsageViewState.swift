@@ -50,13 +50,19 @@ nonisolated struct ProviderState: Hashable, Sendable, Identifiable {
 /// An immutable snapshot of the store, published once per tick.
 nonisolated struct UsageViewState: Hashable, Sendable {
     let summary: UsageSummary
-    /// In `Provider.allCases` order.
+    /// The enabled providers, in `Provider.allCases` order.
     let providers: [ProviderState]
     /// Nil when no provider has known limits.
     let advice: Advice?
     /// The user dismissed this advice (or a worse one) and it has not got worse since.
     let isAdviceDismissed: Bool
     let updatedAt: Date?
+    /// How cards are mapped: account names and 5-hour rows.
+    var cardOptions = CardOptions()
+    /// Stored advice dismissals ("Warn me again" clears them).
+    var dismissedAdviceCount = 0
+
+    var hasDismissedAdvice: Bool { dismissedAdviceCount > 0 }
 
     static let empty = UsageViewState(
         summary: UsageSummary(bucketStarts: [], lanes: [:]),
@@ -75,9 +81,9 @@ nonisolated struct UsageViewState: Hashable, Sendable {
 
     var visibleAdvice: Advice? { isAdviceDismissed ? nil : advice }
 
-    /// The cockpit cards, one per provider, as of `updatedAt`.
+    /// The cockpit cards, one per enabled provider, as of `updatedAt`.
     func cards(now: Date) -> [ProviderCard] {
-        providers.map { ProviderCard(state: $0, now: updatedAt ?? now) }
+        providers.map { ProviderCard(state: $0, now: updatedAt ?? now, options: cardOptions) }
     }
 
     var header: CockpitHeader { CockpitHeader(state: self) }

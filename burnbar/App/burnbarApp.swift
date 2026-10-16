@@ -11,7 +11,8 @@ struct burnbarApp: App {
     @State private var store: UsageStore
 
     init() {
-        let store = Self.isInert ? UsageStore.inert() : UsageStore.live()
+        let settings = BurnbarSettings()
+        let store = Self.isInert ? UsageStore.inert(settings: settings) : UsageStore.live(settings: settings)
         store.start()
         _store = State(initialValue: store)
     }

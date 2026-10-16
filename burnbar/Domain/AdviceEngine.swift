@@ -73,6 +73,9 @@ nonisolated enum Advice: Hashable, Sendable {
 /// 4. Current 5-hour runs dry before its reset → X 5-HOUR OUT IN t.
 /// 5. Another candidate banks ≥ 1.15× the current → USE it NEXT; otherwise KEEP USING current.
 /// With no current sub, the most banked unblocked sub is treated as current.
+///
+/// Without suggestions (`suggestingNext: false`) only warnings are given: rule 2 is skipped,
+/// rule 3 always rests, and rule 5 gives no advice.
 nonisolated enum AdviceEngine {
     static let blockedFiveHour = 0.9
     static let blockedWithin: TimeInterval = 0.5 * 3600
@@ -83,10 +86,15 @@ nonisolated enum AdviceEngine {
     static let useNowShare = 0.15
 
     static func advise(_ subs: [SubscriptionPace], current: Provider?, now: Date) -> Advice {
+        advise(subs, current: current, now: now, suggestingNext: true) ?? .spent
+    }
+
+    /// Like `advise(_:current:now:)`; without suggestions, nil when there is nothing to warn about.
+    static func advise(_ subs: [SubscriptionPace], current: Provider?, now: Date, suggestingNext: Bool) -> Advice? {
         let open = subs.filter { !isBlocked($0, now: now) }
         guard !open.isEmpty else { return .spent }
 
-        let candidates = open
+        let candidates = !suggestingNext ? [] : open
             .filter { banked($0) >= minimumBanked }
             .sorted { banked($0) > banked($1) }
 
@@ -107,10 +115,19 @@ nonisolated enum AdviceEngine {
             return .fiveHourOut(cur.provider, in: dry.timeIntervalSince(now).rounded())
         }
 
+        guard suggestingNext else { return nil }
         if let alternative, banked(alternative) >= switchFactor * banked(cur) {
             return .useNext(alternative.provider)
         }
         return .keepUsing(cur.provider)
+    }
+
+    /// A 5-hour row worth showing even when 5-hour windows are hidden: at or past the blocked
+    /// share, or running dry before its reset (the "5-HOUR OUT" condition).
+    static func isFiveHourRunningOut(_ five: Pace) -> Bool {
+        if five.percent >= blockedFiveHour { return true }
+        guard let dry = five.dryAt else { return false }
+        return dry < five.row.resetsAt
     }
 
     static func isBlocked(_ sub: SubscriptionPace, now: Date) -> Bool {

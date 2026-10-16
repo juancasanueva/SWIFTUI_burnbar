@@ -5,8 +5,9 @@
 
 import SwiftUI
 
-/// The bar's compact strip: Claude's weekly gauge, one lane of 12 heat cells per provider
-/// (Claude above Codex), Codex's weekly gauge, then the advice chip when there is one.
+/// The bar's compact strip: Claude's weekly gauge, one lane of heat cells per enabled provider
+/// (Claude above Codex), Codex's weekly gauge, then the advice chip when there is one. A
+/// disabled provider has no lane and no gauge.
 struct HeatStripView: View {
     let state: UsageViewState
     /// Opacity of gauges at or above 90% used, driven by the label's pulse; 1 when still.
@@ -21,13 +22,17 @@ struct HeatStripView: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            GaugeTick(pace: state.provider(.claude)?.weekly, pulseOpacity: pulseOpacity)
+            if let claude = state.provider(.claude) {
+                GaugeTick(pace: claude.weekly, pulseOpacity: pulseOpacity)
+            }
             VStack(spacing: 2) {
                 ForEach(state.providers) { provider in
                     LaneCells(provider: provider, peak: state.summary.peakBucketHeat)
                 }
             }
-            GaugeTick(pace: state.provider(.codex)?.weekly, pulseOpacity: pulseOpacity)
+            if let codex = state.provider(.codex) {
+                GaugeTick(pace: codex.weekly, pulseOpacity: pulseOpacity)
+            }
             if let advice = state.visibleAdvice {
                 AdviceChip(text: advice.text)
             }
@@ -37,7 +42,7 @@ struct HeatStripView: View {
     }
 }
 
-/// One provider's 12 cells, coloured cold → warm → hot by heat relative to the hottest cell
+/// One provider's cells, coloured cold → warm → hot by heat relative to the hottest cell
 /// across lanes. A failed lane is solid red.
 private struct LaneCells: View {
     let provider: ProviderState
