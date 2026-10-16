@@ -18,41 +18,87 @@ struct CockpitViewTests {
         return renderer.nsImage
     }
 
-    @Test func rendersTheFixtureCockpitAtItsFixedWidth() throws {
-        let view = CockpitView(header: CockpitPreview.header, advice: "USE CODEX NEXT", cards: CockpitPreview.cards,
-                               isRefreshing: false, onRefresh: {}, onDismissAdvice: {}, onQuit: {})
-        let image = try #require(render(view))
-        #expect(image.size.width == CockpitView.width)
-        #expect(image.size.height > 100)
+    private func cockpit(_ cards: [ProviderCard], header: CockpitHeader = CockpitPreview.header,
+                         advice: AdviceBanner? = nil, headline: HeadlineMode = .budget) -> some View {
+        CockpitView(header: header, advice: advice, cards: cards, headline: headline, glowWhen: .over,
+                    isRefreshing: false, onRefresh: {}, onDismissAdvice: {}, onToggleHeadline: {},
+                    onOpenSetup: {}, onQuit: {})
+            .environment(\.colorScheme, .dark)
+    }
+
+    /// One fixed-width column per card, side by side.
+    @Test func rendersTheFixtureCockpitOneColumnPerCard() throws {
+        let advice = AdviceBanner(advice: .useNext(.codex), cards: CockpitPreview.cards)
+        let image = try #require(render(cockpit(CockpitPreview.cards, advice: advice)))
+        #expect(CockpitPreview.cards.count == 2)
+        #expect(image.size.width == CockpitView.width(columns: 2))
+        #expect(CockpitView.width(columns: 2) == 2 * CockpitView.columnWidth + CockpitView.spacing + 2 * CockpitView.padding)
+        #expect(image.size.height > 300)
     }
 
     /// Each fixture card lays out on its own with its rows, burndown chart and token mix: far
-    /// taller than a title and an instruction line.
-    @Test(arguments: CockpitPreview.cards)
-    func rendersEachFixtureCardWithItsContent(card: ProviderCard) throws {
+    /// taller than a title and a status line, in both headline modes.
+    @Test(arguments: CockpitPreview.cards, [HeadlineMode.budget, .tokens])
+    func rendersEachFixtureCardWithItsContent(card: ProviderCard, mode: HeadlineMode) throws {
         #expect(card.burndown != nil)
-        let image = try #require(render(ProviderCardView(card: card).frame(width: CockpitView.width - 24)))
-        #expect(image.size.width == CockpitView.width - 24)
-        #expect(image.size.height > 200)
-    }
-
-    /// The scroll view's content is measured, so the cards are laid out inside the cockpit: the
-    /// fixture's two cards (each over 200 pt) make it far taller than the empty cockpit.
-    @Test func theCockpitLaysOutItsCards() throws {
-        func height(_ cards: [ProviderCard]) throws -> CGFloat {
-            let view = CockpitView(header: CockpitPreview.header, advice: nil, cards: cards,
-                                   isRefreshing: false, onRefresh: {}, onDismissAdvice: {}, onQuit: {})
-            return try #require(render(view)).size.height
-        }
-        #expect(CockpitPreview.cards.count == 2)
-        #expect(try height(CockpitPreview.cards) > height([]) + 400)
-    }
-
-    @Test func rendersAnEmptyCockpit() throws {
-        let view = CockpitView(header: CockpitHeader(state: .empty), advice: nil, cards: UsageViewState.empty.cards(now: now),
-                               isRefreshing: true, onRefresh: {}, onDismissAdvice: {}, onQuit: {})
+        let view = ProviderCardView(card: card, headline: card.headline(mode, windowLabel: "6 h"),
+                                    glow: CardGlow.glow(for: card, when: .spent), windowLabel: "6 h", window: 6 * hour,
+                                    onToggleHeadline: {})
+            .frame(width: CockpitView.columnWidth)
+            .cockpitChrome()
         let image = try #require(render(view))
-        #expect(image.size.width == CockpitView.width)
+        #expect(image.size.width == CockpitView.columnWidth)
+        #expect(image.size.height > 300)
+    }
+
+    /// The scroll view's content is measured, so the cards are laid out inside the cockpit.
+    @Test func theCockpitLaysOutItsCards() throws {
+        let full = try #require(render(cockpit(CockpitPreview.cards))).size.height
+        let empty = try #require(render(cockpit([]))).size.height
+        #expect(full > empty + 300)
+    }
+
+    @Test func rendersAnEmptyCockpitAtOneColumn() throws {
+        let image = try #require(render(cockpit([], header: CockpitHeader(state: .empty))))
+        #expect(image.size.width == CockpitView.width(columns: 1))
+    }
+
+    @Test(arguments: [(ThemePreference.dark, ColorScheme.dark as ColorScheme?), (.light, .light), (.system, nil)])
+    func themeForcesTheColourScheme(theme: ThemePreference, scheme: ColorScheme?) {
+        #expect(theme.colorScheme == scheme)
+        #expect(CockpitPalette(.light) == .light)
+        #expect(CockpitPalette(.dark) == .dark)
+    }
+
+    @Test func headlineModeToggles() {
+        #expect(HeadlineMode.budget.toggled == .tokens)
+        #expect(HeadlineMode.tokens.toggled == .budget)
+    }
+
+    /// Writes the fixture cockpit to a PNG for a visual check when `BURNBAR_RENDER_PATH` is set.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BURNBAR_RENDER_PATH"] != nil))
+    func writesAFixtureRender() throws {
+        let path = try #require(ProcessInfo.processInfo.environment["BURNBAR_RENDER_PATH"])
+        let advice = AdviceBanner(advice: .useNext(.codex), cards: CockpitPreview.cards)
+        // ImageRenderer leaves scroll views blank, so the columns render on their own here.
+        let columns = HStack(alignment: .top, spacing: CockpitView.spacing) {
+            ForEach(CockpitPreview.cards) { card in
+                ProviderCardView(card: card, headline: card.headline(.budget, windowLabel: "6 h"),
+                                 glow: CardGlow.glow(for: card, when: .over), windowLabel: "6 h", window: 6 * hour,
+                                 onToggleHeadline: {})
+                    .frame(width: CockpitView.columnWidth)
+            }
+        }
+        let page = VStack(spacing: CockpitView.spacing) {
+            cockpit([], advice: advice)
+            columns.padding(CockpitView.padding).cockpitChrome().environment(\.colorScheme, .dark)
+        }
+        let renderer = ImageRenderer(content: page)
+        renderer.scale = 2
+        let image = try #require(renderer.nsImage)
+        let tiff = try #require(image.tiffRepresentation)
+        let png = try #require(NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: path))
     }
 
     @Test func theFixtureCoversARestartedWeeklyOnlyProvider() throws {

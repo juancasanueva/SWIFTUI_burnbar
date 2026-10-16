@@ -25,7 +25,7 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
 
 ## Tasks
 - [x] T1 Settings model + store wiring (provider toggles, strip window/cells, refresh intervals, suggest next sub, 5-hour windows, account names, read Claude limits, warn me again). Route: delegated (multi-file).
-- [ ] T2 Cockpit redesign (wide dark panel, header, advice banner, columns of cards, headline budget/tokens, glow, footer, theme). Route: delegated (multi-file).
+- [x] T2 Cockpit redesign (wide dark panel, header, advice banner, columns of cards, headline budget/tokens, glow, footer, theme). Route: delegated (multi-file).
 - [ ] T3 Setup screen (three columns, SETUP/DONE toggle, launch at login). Route: delegated (multi-file).
 - [ ] T4 Ember motion in the heat strip (Reduce Motion aware) + README update. Route: delegated.
 
@@ -40,7 +40,13 @@ ask-on-risk. Forecast ~1400 authored lines across 4 tasks.
   - Store: `UsageStore(settings:)`, `live(settings:)`, `inert(settings:)`, `settingsDidChange()` (observed via `Observations`), `warnMeAgain()`; intervals read live from settings; collectors keep 1 d of history.
   - View state: `UsageViewState.cardOptions`, `dismissedAdviceCount`, `hasDismissedAdvice`; `CardOptions` (account names, 5-hour filter) applied by `cards(now:)`; `CockpitHeader.window` / `windowLabel`.
   - Verification: `xcodebuild -project burnbar.xcodeproj -scheme burnbar -destination 'platform=macOS' -only-testing:burnbarTests test`: TEST SUCCEEDED, 315 test cases passed, 0 failed.
-  - Commit: see `git log` (feat: persisted settings wired into the usage store).
+  - Commit: 61e263a (feat: persisted settings wired into the usage store).
+  - Native review: approved and acknowledged; reviewed boundary 61e263a.
+- T2 done (route: delegated, writer trigger: 2+ non-trivial files). Test-first: RED observed as compile failures for the missing `CardGlow` / headline / status APIs in `CockpitDisplayTests`, then GREEN. View layout itself has no meaningful RED; it is covered by render smoke tests and a visual check against screenshots/cockpit2.png.
+  - Pure logic (`CockpitDisplay.swift`): `CardStatus` (title/detail/tone), `BudgetSummary`, `CardHeadline` via `ProviderCard.headline(_:windowLabel:)` (budget falls back to tokens), `CardGlow.glow(for:when:)`, `AdviceBanner`, `Advice.provider`, `ProviderCard.spendAdvice` / `averageRateText(window:)`, `TokenSplit.cacheReadShare`, `CockpitFormat.headlineTokens`; `LimitLine.elapsed`, `ProviderCard.buckets`.
+  - Theme (`CockpitTheme.swift`): `CockpitPalette` tokens (dark/light) in `\.cockpitPalette`, `cockpitChrome()`, `cockpitBox(glow:intensity:)`, `SectionLabel`, `StatColumn`, `CockpitTextButtonStyle`, `CockpitIconButton`, `UsageBar(tick:)`; `ThemePreference.colorScheme`, `HeadlineMode.toggled`; `Lane.accent`.
+  - Views: wide `CockpitView` (400 pt columns, `width(columns:)`), header with SETUP/refresh/quit, `AdviceBannerButton`, restyled cards and burndown, footer; `PanelView` holds `CockpitScreen` (.cockpit/.setup placeholder) and applies the theme.
+  - Verification: `xcodebuild -project burnbar.xcodeproj -scheme burnbar -destination 'platform=macOS' -only-testing:burnbarTests test`: TEST SUCCEEDED, 352 passed, 0 failed, 1 skipped (opt-in render test, `TEST_RUNNER_BURNBAR_RENDER_PATH`).
 
 ## Next step
-T2.
+T3.

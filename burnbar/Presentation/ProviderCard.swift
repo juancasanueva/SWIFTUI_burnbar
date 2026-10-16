@@ -88,6 +88,8 @@ nonisolated struct LimitLine: Hashable, Sendable, Identifiable {
     let label: String
     /// Nil when the row is unknown.
     let percent: Double?
+    /// Share of the window elapsed: where an even burn would be now. Nil when unknown.
+    let elapsed: Double?
     let gauge: GaugeLevel?
     let resetsAt: Date
     let isProjectedReset: Bool
@@ -110,6 +112,7 @@ nonisolated struct LimitLine: Hashable, Sendable, Identifiable {
         let pace = state.pace
         label = state.row.label
         percent = pace?.percent
+        elapsed = pace?.elapsed
         gauge = pace?.gauge
         resetsAt = state.row.resetsAt
         isProjectedReset = pace?.isProjectedReset ?? false
@@ -142,6 +145,14 @@ nonisolated struct ProviderCard: Hashable, Sendable, Identifiable {
     /// The limit rows the options show.
     let lines: [LimitLine]
     let burndown: Burndown?
+    /// Spent share, name and reset of the burndown row; nil when no limit is known.
+    let budget: BudgetSummary?
+    /// The coloured status line under the title, e.g. "BANKED 51%".
+    let statusLine: CardStatus
+    /// How fast to spend from here, e.g. "Spend up to 1.5% an hour and it lasts to the reset".
+    let spendAdvice: String?
+    /// Heat per strip bucket, oldest first, for the burn histogram.
+    let buckets: [Int]
     let rate5m: Double
     let rate60m: Double
     let split: TokenSplit
@@ -171,8 +182,13 @@ nonisolated struct ProviderCard: Hashable, Sendable, Identifiable {
         }
         verdict = headline?.pace?.verdict
         instruction = Self.instruction(headline: headline?.pace, fiveHour: state.fiveHour, status: state.status, now: now)
+        budget = headline?.pace.map { BudgetSummary(pace: $0, now: now) }
+        statusLine = CardStatus(headline: headline?.pace, fiveHour: state.fiveHour, status: state.status,
+                                hasError: state.hasError, now: now)
+        spendAdvice = headline?.pace.map(Self.spendAdvice)
 
         let lane = state.lane
+        buckets = lane.buckets
         rate5m = lane.rate5m
         rate60m = lane.rate60m
         split = lane.split
