@@ -9,9 +9,10 @@ import Foundation
 ///
 /// Samples are kept per provider + row label and appended to a JSONL file
 /// (`~/Library/Application Support/burnbar/limit-samples.jsonl` by default), one
-/// `{"provider", "label", "t" (unix seconds), "percent"}` object per line. A sample is stored
-/// only when it is newer than the row's last one and either its value changed or at least
-/// `minInterval` passed. Samples older than `maxAge` are dropped: on load (malformed lines too,
+/// `{"provider", "label", "t" (unix seconds), "percent", "resetsAt"?}` object per line (lines
+/// without `resetsAt` still load). A snapshot row whose reported reset has passed is not stored:
+/// its reading belongs to a finished window. A sample is stored only when it is newer than the
+/// row's last one and either its value or reset changed (beyond `LimitSample.resetTolerance`) or at least `minInterval` passed. Samples older than `maxAge` are dropped: on load (malformed lines too,
 /// rewriting the file when anything was dropped) and while running, rewriting the file once
 /// `compactionThreshold` samples have expired.
 ///
@@ -31,6 +32,7 @@ actor LimitSampleStore: LimitSampleRecording {
         let label: String
         let t: Date
         let percent: Double
+        let resetsAt: Date?
     }
 
     private let directory: URL
@@ -70,10 +72,13 @@ actor LimitSampleStore: LimitSampleRecording {
         return samplesByKey?[Key(provider: provider, label: label)] ?? []
     }
 
-    /// Records every row of `snapshot` at its `measuredAt`; a repeated snapshot adds nothing.
+    /// Records every row of `snapshot` at its `measuredAt`, with the row's reported reset; a
+    /// repeated snapshot adds nothing, nor does a row whose reset has passed.
     func record(_ snapshot: LimitSnapshot) {
-        for row in snapshot.rows {
-            record(LimitSample(t: snapshot.measuredAt, percent: row.percent), provider: snapshot.provider, label: row.label)
+        let now = now()
+        for row in snapshot.rows where row.resetsAt > now {
+            record(LimitSample(t: snapshot.measuredAt, percent: row.percent, resetsAt: row.resetsAt),
+                   provider: snapshot.provider, label: row.label)
         }
     }
 
@@ -85,7 +90,7 @@ actor LimitSampleStore: LimitSampleRecording {
         var samples = samplesByKey?[key] ?? []
         if let last = samples.last {
             guard sample.t > last.t else { return false }
-            let changed = abs(sample.percent - last.percent) > 1e-9
+            let changed = abs(sample.percent - last.percent) > 1e-9 || Self.resetChanged(from: last.resetsAt, to: sample.resetsAt)
             guard changed || sample.t.timeIntervalSince(last.t) >= minInterval else { return false }
         }
         guard sample.t >= cutoff else { return false }
@@ -95,9 +100,19 @@ actor LimitSampleStore: LimitSampleRecording {
         if fileIsDirty || expiredSinceCompaction >= compactionThreshold {
             rewrite()
         } else {
-            append(Record(provider: provider, label: label, t: sample.t, percent: sample.percent))
+            append(Record(provider: provider, label: label, t: sample.t, percent: sample.percent, resetsAt: sample.resetsAt))
         }
         return true
+    }
+
+    /// A reset appearing or vanishing is a change; a reported one only when it moved beyond
+    /// `LimitSample.resetTolerance` (jitter between polls must not defeat `minInterval`).
+    private static func resetChanged(from old: Date?, to new: Date?) -> Bool {
+        switch (old, new) {
+        case (nil, nil): false
+        case let (old?, new?): !LimitSample.sameWindow(old, new)
+        default: true
+        }
     }
 
     private var cutoff: Date { now().addingTimeInterval(-maxAge) }
@@ -130,7 +145,7 @@ actor LimitSampleStore: LimitSampleRecording {
                     continue
                 }
                 loaded[Key(provider: record.provider, label: record.label), default: []]
-                    .append(LimitSample(t: record.t, percent: record.percent))
+                    .append(LimitSample(t: record.t, percent: record.percent, resetsAt: record.resetsAt))
             }
         }
         samplesByKey = loaded.mapValues { $0.sorted { $0.t < $1.t } }
@@ -155,7 +170,9 @@ actor LimitSampleStore: LimitSampleRecording {
         let encoder = Self.encoder
         var data = Data()
         let records = (samplesByKey ?? [:])
-            .flatMap { key, samples in samples.map { Record(provider: key.provider, label: key.label, t: $0.t, percent: $0.percent) } }
+            .flatMap { key, samples in samples.map {
+                Record(provider: key.provider, label: key.label, t: $0.t, percent: $0.percent, resetsAt: $0.resetsAt)
+            } }
             .sorted { $0.t < $1.t }
         for record in records {
             guard let line = try? encoder.encode(record) else { continue }

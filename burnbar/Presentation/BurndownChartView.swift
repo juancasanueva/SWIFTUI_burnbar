@@ -61,9 +61,10 @@ struct BurndownChartView: View {
         }
     }
 
-    /// A line series; `series` keeps the three lines from joining.
+    /// A line series; `series` keeps the three lines from joining. Points are identified by
+    /// position (the series already holds one point per instant).
     private func line(_ points: [BurndownPoint], _ series: Series) -> some ChartContent {
-        ForEach(points, id: \.t) { point in
+        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
             LineMark(
                 x: .value("Time", point.t),
                 y: .value("Used", point.percent * 100),
