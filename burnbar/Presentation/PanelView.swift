@@ -19,6 +19,8 @@ struct PanelView: View {
 
     @State private var isRefreshing = false
     @State private var screen: CockpitScreen = .cockpit
+    /// The system appearance, read above the override so "System" follows it.
+    @Environment(\.colorScheme) private var systemColorScheme
 
     var body: some View {
         let settings = store.settings
@@ -59,7 +61,8 @@ struct PanelView: View {
                 .onAppear(perform: launchAtLogin.sync)
             }
         }
-        .preferredColorScheme(settings.theme.colorScheme)
+        // A MenuBarExtra window ignores `preferredColorScheme`, so the scheme is injected directly.
+        .environment(\.colorScheme, settings.theme.resolved(system: systemColorScheme))
         .task { await store.refreshLimits(force: true) }
     }
 

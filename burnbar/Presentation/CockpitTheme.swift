@@ -103,6 +103,9 @@ extension ThemePreference {
         case .system: nil
         }
     }
+
+    /// The scheme the panel renders with: the forced one, or `system` when following it.
+    func resolved(system: ColorScheme) -> ColorScheme { colorScheme ?? system }
 }
 
 extension HeadlineMode {
