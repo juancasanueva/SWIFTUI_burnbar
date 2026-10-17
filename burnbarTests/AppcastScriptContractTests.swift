@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 
@@ -199,6 +200,7 @@ struct AppcastScriptContractTests {
         )
     }
 
+
     // MARK: - Fetching the live feed
 
     /// The script's `# --- fetch` section, up to the next section marker.
@@ -209,21 +211,23 @@ struct AppcastScriptContractTests {
         return String(rest[rest.startIndex..<end.lowerBound])
     }
 
-    /// The feed is fetched by exactly one `curl` call site.
+    /// Every download goes through one `curl` call site, in the fetch section.
     ///
-    /// The behavioural tests below run the real script against a stubbed `curl`,
-    /// so they only prove something about production if every feed fetch goes
-    /// through the one call site they exercise.
-    @Test("The live feed has exactly one curl call site, in the fetch section")
-    func theLiveFeedHasExactlyOneCurlCallSite() throws {
+    /// The live feed and the Sparkle tarball share one bounded, retrying
+    /// download helper. The behavioural tests below run the real script against
+    /// a stubbed `curl`, so they only prove something about production if every
+    /// download goes through the one call site they exercise.
+    @Test("The script has exactly one curl call site, in the fetch section")
+    func theScriptHasExactlyOneCurlCallSite() throws {
         let script = try AppcastScriptSources.script()
         let fetch = try Self.fetchSection(of: script)
-        let feedFetches = { (text: String) in
-            AppcastScriptSources.commandInvocations(of: "curl", in: text).filter { $0.contains("$FEED_URL") }
+        // An invocation passes options; prose and log lines say "curl exit".
+        let calls = { (text: String) in
+            AppcastScriptSources.commandInvocations(of: "curl", in: text).filter { $0.hasPrefix("curl -") }
         }
 
-        #expect(feedFetches(script).count == 1)
-        #expect(feedFetches(fetch).count == 1)
+        #expect(calls(script).count == 1)
+        #expect(calls(fetch).count == 1)
     }
 
     /// Only a 404 means "no feed yet", and it is never retried.
@@ -256,16 +260,24 @@ struct AppcastScriptContractTests {
         #expect(run.feed == Data(FeedFetchHarness.liveFeed.utf8))
     }
 
-    /// Every other outcome exits non-zero and leaves no feed file behind.
+    /// Every other outcome exits non-zero and leaves no feed file behind, not
+    /// even a stale one from an earlier run.
     ///
     /// curl failing (DNS, connection refused, timeout), a 5xx that never
     /// recovers, another 4xx, and a 200 whose body is empty or is not a feed.
-    @Test("Any other fetch outcome exits non-zero and writes nothing", arguments: FeedFetchFailure.all)
+    /// Each run starts with a valid feed already at `CURRENT_FEED_FILE`: a
+    /// refused fetch that left it there would hand the build a feed this run
+    /// never read.
+    @Test("Any other fetch outcome exits non-zero and leaves no feed file", arguments: FeedFetchFailure.all)
     func anyOtherFetchOutcomeExitsNonZero(_ failure: FeedFetchFailure) throws {
-        let run = try FeedFetchHarness.run(responses: failure.responses, body: failure.body)
+        let run = try FeedFetchHarness.run(
+            responses: failure.responses,
+            body: failure.body,
+            preexistingFeed: FeedFetchHarness.liveFeed
+        )
 
         #expect(run.exitStatus != 0, "\(run.log)")
-        #expect(run.feed == nil, "a refused fetch must not leave a feed file")
+        #expect(run.feed == nil, "a refused fetch must not leave a feed file, stale or new")
         #expect(run.curlCalls.count == failure.expectedAttempts)
     }
 
@@ -279,65 +291,223 @@ struct AppcastScriptContractTests {
         #expect(run.feed == Data(FeedFetchHarness.liveFeed.utf8))
     }
 
-    /// Every attempt is bounded in time and reads the status code itself.
+    /// Every feed attempt is bounded in time and reads the status code itself.
     ///
     /// `-f` is refused because it folds a 404 and a 503 into one exit status, and
     /// curl's own `--retry-all-errors` because it would retry a 404.
-    @Test("Every attempt carries connect and total timeouts and no -f")
+    @Test("Every feed attempt carries connect and total timeouts and no -f")
     func everyAttemptIsBounded() throws {
         let run = try FeedFetchHarness.run(responses: ["503", "200"], body: FeedFetchHarness.liveFeed)
 
         #expect(run.curlCalls.count == 2)
-        for call in run.curlCalls {
-            #expect(call.contains("--connect-timeout"), "\(call)")
-            #expect(call.contains("--max-time"), "\(call)")
-            #expect(call.contains("%{http_code}"), "\(call)")
-            #expect(!call.contains("--retry-all-errors"), "\(call)")
-            let clusters = call.filter { $0.hasPrefix("-") && !$0.hasPrefix("--") }
-            #expect(!clusters.contains { $0.contains("f") }, "curl -f hides which failure it was: \(call)")
-        }
+        FeedFetchHarness.expectBounded(run.curlCalls)
     }
 
     /// The build reads the pre-fetched feed and never fetches it again.
     ///
     /// In CI the feed is fetched before the release is published; the build step
-    /// runs after. A missing pre-fetched file must stop the build rather than
-    /// quietly fetch a second time after the release is already public.
+    /// runs after. A missing pre-fetched file must stop the build, saying why,
+    /// rather than quietly fetch a second time after the release is public.
     @Test("The build refuses a missing pre-fetched feed without fetching")
     func theBuildRefusesAMissingPreFetchedFeed() throws {
         let run = try FeedFetchHarness.run(mode: nil, responses: ["200"], body: FeedFetchHarness.liveFeed)
 
         #expect(run.exitStatus != 0, "\(run.log)")
         #expect(run.curlCalls.isEmpty)
+        #expect(run.log.contains("the pre-fetched feed"), "\(run.log)")
+        #expect(run.log.contains("is missing or empty"), "\(run.log)")
+        #expect(run.appcast == nil)
     }
 
-    /// A prerelease tag fetches nothing, in either mode.
-    @Test("A prerelease tag skips the fetch")
-    func aPrereleaseTagSkipsTheFetch() throws {
-        let run = try FeedFetchHarness.run(responses: ["200"], body: FeedFetchHarness.liveFeed, tag: "v1.0.0-beta.1")
+    /// A prerelease tag downloads nothing and writes nothing, in every mode.
+    @Test("A prerelease tag fetches and writes nothing", arguments: ["fetch", "tools", "build"])
+    func aPrereleaseTagFetchesNothing(_ mode: String) throws {
+        let run = try FeedFetchHarness.run(
+            mode: mode == "build" ? nil : mode,
+            responses: ["200"],
+            body: FeedFetchHarness.liveFeed,
+            tag: "v1.0.0-beta.1"
+        )
 
         #expect(run.exitStatus == 0, "\(run.log)")
         #expect(run.curlCalls.isEmpty)
         #expect(run.feed == nil)
+        #expect(!run.toolsInstalled)
+        #expect(run.appcast == nil)
     }
 
-    /// A prerelease tag produces no feed item at all.
+    /// The prerelease guard is the same literal the workflow uses.
     ///
-    /// The same literal guard the release workflow uses, restated in the script
-    /// so running it by hand behaves identically to running it in CI. A
-    /// prerelease that reached the feed would be offered to every stable user,
-    /// which the version comparison alone would not prevent.
-    @Test("A prerelease tag exits before writing anything")
-    func aPrereleaseTagExitsBeforeWritingAnything() throws {
+    /// Restated in the script so running it by hand behaves identically to
+    /// running it in CI. A prerelease that reached the feed would be offered to
+    /// every stable user, which the version comparison alone would not prevent.
+    /// The behaviour itself is covered by `aPrereleaseTagFetchesNothing`.
+    @Test("The prerelease guard matches a hyphen in the tag and exits 0")
+    func thePrereleaseGuardIsTheWorkflowsLiteral() throws {
         let script = try AppcastScriptSources.script()
 
         #expect(script.contains("case \"$GITHUB_REF_NAME\" in"))
         #expect(script.contains("*-*)"))
         #expect(script.contains("exit 0"))
     }
+
+    // MARK: - Fetching the Sparkle tools
+
+    /// The pinned tarball is downloaded, digest-checked and extracted, and
+    /// nothing else is needed for the build to sign.
+    @Test("The tools download installs sign_update when the digest matches")
+    func theToolsDownloadInstallsSignUpdate() throws {
+        let tarball = try FeedFetchHarness.fakeSparkleTarball()
+        let run = try FeedFetchHarness.run(
+            mode: "tools",
+            responses: ["200"],
+            bodyData: tarball,
+            pinnedDigest: FeedFetchHarness.sha256(tarball)
+        )
+
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.count == 1)
+        #expect(run.curlCalls.first?.last == FeedFetchHarness.sparkleTarballURL)
+        #expect(run.toolsInstalled)
+        FeedFetchHarness.expectBounded(run.curlCalls)
+    }
+
+    /// A tarball whose digest is not the pinned one is refused, and nothing is
+    /// installed.
+    ///
+    /// Run against the **unmodified** production script and its real digest: a
+    /// fake tarball can never match it, which is the whole point.
+    @Test("A digest mismatch fails and installs nothing")
+    func aDigestMismatchFails() throws {
+        let run = try FeedFetchHarness.run(
+            mode: "tools",
+            responses: ["200"],
+            bodyData: try FeedFetchHarness.fakeSparkleTarball()
+        )
+
+        #expect(run.exitStatus != 0, "\(run.log)")
+        #expect(run.curlCalls.count == 1)
+        #expect(!run.toolsInstalled)
+        #expect(run.log.contains("digest"), "\(run.log)")
+    }
+
+    /// The tools download retries what the feed fetch retries.
+    @Test("A transient failure of the tools download is retried")
+    func aTransientToolsFailureIsRetried() throws {
+        let tarball = try FeedFetchHarness.fakeSparkleTarball()
+        let run = try FeedFetchHarness.run(
+            mode: "tools",
+            responses: ["503", "exit28", "200"],
+            bodyData: tarball,
+            pinnedDigest: FeedFetchHarness.sha256(tarball)
+        )
+
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.count == 3)
+        #expect(run.toolsInstalled)
+    }
+
+    /// A tools download that never succeeds stops the run and removes a tools
+    /// directory an earlier run installed.
+    @Test("A failed tools download exits non-zero and leaves no tools", arguments: [
+        (["exit7"], 4),
+        (["503"], 4),
+        (["404", "200"], 1)
+    ])
+    func aFailedToolsDownloadLeavesNoTools(_ responses: [String], _ attempts: Int) throws {
+        let tarball = try FeedFetchHarness.fakeSparkleTarball()
+        let run = try FeedFetchHarness.run(
+            mode: "tools",
+            responses: responses,
+            bodyData: tarball,
+            pinnedDigest: FeedFetchHarness.sha256(tarball),
+            seedTools: true
+        )
+
+        #expect(run.exitStatus != 0, "\(run.log)")
+        #expect(run.curlCalls.count == attempts)
+        #expect(!run.toolsInstalled, "a failed download must not leave stale tools behind")
+    }
+
+    /// A directory the script did not install is never deleted.
+    ///
+    /// `SPARKLE_TOOLS_DIR` comes from the environment, so clearing it blindly
+    /// would turn a mistyped path into `rm -rf` of whatever it named.
+    @Test("The tools download refuses to replace a directory it did not write")
+    func theToolsDownloadRefusesAForeignDirectory() throws {
+        let tarball = try FeedFetchHarness.fakeSparkleTarball()
+        let run = try FeedFetchHarness.run(
+            mode: "tools",
+            responses: ["200"],
+            bodyData: tarball,
+            pinnedDigest: FeedFetchHarness.sha256(tarball),
+            foreignToolsDirectory: true
+        )
+
+        #expect(run.exitStatus != 0, "\(run.log)")
+        #expect(run.curlCalls.isEmpty)
+        #expect(run.foreignFileSurvived)
+    }
+
+    /// The build signs with the pre-fetched tools and touches no network.
+    @Test("The build signs with the pre-fetched tools without downloading")
+    func theBuildUsesThePreFetchedTools() throws {
+        let run = try FeedFetchHarness.run(
+            mode: nil,
+            responses: ["200"],
+            preexistingFeed: FeedFetchHarness.liveFeed,
+            seedTools: true
+        )
+
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.isEmpty)
+        let appcast = try #require(run.appcast)
+        #expect(appcast.contains("sparkle:edSignature=\"c3R1Yg==\""))
+        #expect(appcast.contains("<title>Version 1.0.0</title>"))
+    }
+
+    /// A missing pre-fetched tools directory stops the build without a download.
+    ///
+    /// The tools are fetched before the release is published; downloading them
+    /// again after Publish would reopen the failure that step exists to close.
+    @Test("The build refuses a missing pre-fetched tools directory without downloading")
+    func theBuildRefusesMissingPreFetchedTools() throws {
+        let run = try FeedFetchHarness.run(
+            mode: nil,
+            responses: ["200"],
+            bodyData: try FeedFetchHarness.fakeSparkleTarball(),
+            preexistingFeed: FeedFetchHarness.liveFeed
+        )
+
+        #expect(run.exitStatus != 0, "\(run.log)")
+        #expect(run.curlCalls.isEmpty)
+        #expect(run.log.contains("the pre-fetched Sparkle tools"), "\(run.log)")
+        #expect(run.appcast == nil)
+    }
+
+    /// Without `SPARKLE_TOOLS_DIR` (a local run) the build downloads the tools
+    /// itself, through the same bounded, digest-checked path.
+    @Test("A local build downloads and verifies the tools itself")
+    func aLocalBuildDownloadsTheToolsItself() throws {
+        let tarball = try FeedFetchHarness.fakeSparkleTarball()
+        let run = try FeedFetchHarness.run(
+            mode: nil,
+            responses: ["503", "200"],
+            bodyData: tarball,
+            preexistingFeed: FeedFetchHarness.liveFeed,
+            pinnedDigest: FeedFetchHarness.sha256(tarball),
+            setToolsDirectory: false
+        )
+
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.count == 2)
+        #expect(run.curlCalls.allSatisfy { $0.last == FeedFetchHarness.sparkleTarballURL })
+        #expect(run.appcast?.contains("sparkle:edSignature=\"c3R1Yg==\"") == true)
+        FeedFetchHarness.expectBounded(run.curlCalls)
+    }
 }
 
-// MARK: - Running the real fetch against controlled responses
+// MARK: - Running the real script against controlled responses
 
 /// One refused fetch outcome, and how many attempts it is allowed.
 nonisolated struct FeedFetchFailure: Sendable, CustomTestStringConvertible {
@@ -369,21 +539,36 @@ nonisolated struct FeedFetchFailure: Sendable, CustomTestStringConvertible {
 /// The stub answers the n-th call with the n-th response (the last one repeats),
 /// and records each call's arguments one per line. A response is an HTTP status
 /// or `exit<N>`, a curl failure with exit status N.
+///
+/// **The pinned digest.** A fake tarball can never match the real Sparkle
+/// digest, and the production script must not read its digest from anywhere a
+/// caller controls. So a test that needs a *matching* digest passes
+/// `pinnedDigest`, and the harness runs a **copy** of the script, written into
+/// the test's own temporary directory, with the one pinned literal replaced by
+/// the fake tarball's digest computed here. The script in the repository is
+/// never changed and has no override; `theSigningToolIsPinnedByDigest` keeps
+/// the literal unique, and the mismatch test runs the unmodified script.
 nonisolated enum FeedFetchHarness {
 
     struct Run {
         let exitStatus: Int32
         let feed: Data?
+        let toolsInstalled: Bool
+        let appcast: String?
+        let foreignFileSurvived: Bool
         let curlCalls: [[String]]
         let log: String
     }
+
+    static let sparkleTarballURL =
+        "https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz"
 
     static let liveFeed = """
         <?xml version="1.0" encoding="UTF-8"?>
         <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
                 <title>Burnbar</title>
-                <item><title>Version 1.0.0</title></item>
+                <item><title>Version 0.9.0</title></item>
             </channel>
         </rss>
 
@@ -410,12 +595,81 @@ nonisolated enum FeedFetchHarness {
         printf '%s' "$response"
         """#
 
+    /// A stand-in `sign_update`: it swallows the key on stdin and prints the two
+    /// attributes the script checks for.
+    static let stubSignUpdate = """
+        #!/bin/bash
+        cat > /dev/null
+        printf '%s\\n' 'sparkle:edSignature="c3R1Yg==" length="42"'
+        """
+
+    static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The digest pinned in the production script.
+    static func productionDigest() throws -> String {
+        let script = try AppcastScriptSources.script()
+        let regex = try NSRegularExpression(pattern: "SPARKLE_TARBALL_SHA256=\"([0-9a-f]{64})\"")
+        let range = NSRange(script.startIndex..<script.endIndex, in: script)
+        let match = try #require(regex.firstMatch(in: script, range: range))
+        return try String(script[#require(Range(match.range(at: 1), in: script))])
+    }
+
+    /// A `.tar.xz` laid out like the Sparkle distribution: `bin/sign_update`.
+    static func fakeSparkleTarball() throws -> Data {
+        let fileManager = FileManager.default
+        let dir = fileManager.temporaryDirectory.appendingPathComponent("fake-sparkle-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: dir) }
+        try installStubTools(in: dir.appendingPathComponent("payload"), marker: nil)
+
+        let tarball = dir.appendingPathComponent("Sparkle.tar.xz")
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["-cJf", tarball.path, "-C", dir.appendingPathComponent("payload").path, "bin"]
+        try tar.run()
+        tar.waitUntilExit()
+        #expect(tar.terminationStatus == 0)
+        return try Data(contentsOf: tarball)
+    }
+
+    /// `bin/sign_update` under `dir`, plus the marker the tools step writes.
+    static func installStubTools(in dir: URL, marker: String?) throws {
+        let fileManager = FileManager.default
+        let bin = dir.appendingPathComponent("bin")
+        try fileManager.createDirectory(at: bin, withIntermediateDirectories: true)
+        let tool = bin.appendingPathComponent("sign_update")
+        try Data(stubSignUpdate.utf8).write(to: tool)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        if let marker {
+            try Data("\(marker)\n".utf8).write(to: dir.appendingPathComponent(".pinned-sha256"))
+        }
+    }
+
+    /// Every attempt is bounded in time and reads the status code itself.
+    static func expectBounded(_ calls: [[String]]) {
+        for call in calls {
+            #expect(call.contains("--connect-timeout"), "\(call)")
+            #expect(call.contains("--max-time"), "\(call)")
+            #expect(call.contains("%{http_code}"), "\(call)")
+            #expect(!call.contains("--retry-all-errors"), "\(call)")
+            let clusters = call.filter { $0.hasPrefix("-") && !$0.hasPrefix("--") }
+            #expect(!clusters.contains { $0.contains("f") }, "curl -f hides which failure it was: \(call)")
+        }
+    }
+
     /// `mode` is the script's first argument; `nil` runs the build.
     static func run(
         mode: String? = "fetch",
         responses: [String],
         body: String? = nil,
-        tag: String = "v1.0.0"
+        bodyData: Data? = nil,
+        tag: String = "v1.0.0",
+        preexistingFeed: String? = nil,
+        pinnedDigest: String? = nil,
+        setToolsDirectory: Bool = true,
+        seedTools: Bool = false,
+        foreignToolsDirectory: Bool = false
     ) throws -> Run {
         let fileManager = FileManager.default
         let dir = fileManager.temporaryDirectory.appendingPathComponent("feed-fetch-\(UUID().uuidString)")
@@ -426,22 +680,48 @@ nonisolated enum FeedFetchHarness {
         let curl = stubs.appendingPathComponent("curl")
         try Data(stubCurl.utf8).write(to: curl)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
-        if let body { try Data(body.utf8).write(to: dir.appendingPathComponent("body")) }
+        if let served = bodyData ?? body.map({ Data($0.utf8) }) {
+            try served.write(to: dir.appendingPathComponent("body"))
+        }
 
         let feedFile = dir.appendingPathComponent("prefetched/current.xml")
+        if let preexistingFeed {
+            try fileManager.createDirectory(at: feedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(preexistingFeed.utf8).write(to: feedFile)
+        }
+
+        let digest = try pinnedDigest ?? productionDigest()
+        let toolsDir = dir.appendingPathComponent("prefetched/sparkle-tools")
+        if seedTools { try installStubTools(in: toolsDir, marker: digest) }
+        let foreignFile = toolsDir.appendingPathComponent("keep-me")
+        if foreignToolsDirectory {
+            try fileManager.createDirectory(at: toolsDir, withIntermediateDirectories: true)
+            try Data("not the script's".utf8).write(to: foreignFile)
+        }
+
+        var script = AppcastScriptSources.scriptURL
+        if let pinnedDigest {
+            let source = try AppcastScriptSources.script()
+            let production = try productionDigest()
+            #expect(source.components(separatedBy: production).count == 2, "the pinned digest must be unique")
+            script = dir.appendingPathComponent("appcast.sh")
+            try Data(source.replacingOccurrences(of: production, with: pinnedDigest).utf8).write(to: script)
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [AppcastScriptSources.scriptURL.path] + (mode.map { [$0] } ?? [])
+        process.arguments = [script.path] + (mode.map { [$0] } ?? [])
         process.currentDirectoryURL = dir
-        process.environment = [
+        var environment = [
             "PATH": "\(stubs.path):/usr/bin:/bin",
             "HOME": dir.path,
+            "TMPDIR": dir.path,
             "STUB_DIR": dir.path,
             "STUB_RESPONSES": responses.joined(separator: " "),
             "GITHUB_REF_NAME": tag,
             "FEED_URL": "https://feed.invalid/appcast.xml",
             "CURRENT_FEED_FILE": feedFile.path,
-            "FEED_FETCH_RETRY_DELAY": "0",
+            "FETCH_RETRY_DELAY": "0",
             "VERSION": "1.0.0",
             "BUILD_NUMBER": "1",
             "ASSET_URL": "https://example.invalid/Burnbar-1.0.0.zip",
@@ -449,6 +729,8 @@ nonisolated enum FeedFetchHarness {
             "OUTPUT_DIR": dir.appendingPathComponent("site").path,
             "SPARKLE_PRIVATE_KEY": "not-a-key"
         ]
+        if setToolsDirectory { environment["SPARKLE_TOOLS_DIR"] = toolsDir.path }
+        process.environment = environment
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -457,9 +739,13 @@ nonisolated enum FeedFetchHarness {
         process.waitUntilExit()
 
         let calls = (try? String(contentsOf: dir.appendingPathComponent("calls"), encoding: .utf8)) ?? ""
+        let signUpdate = toolsDir.appendingPathComponent("bin/sign_update").path
         return Run(
             exitStatus: process.terminationStatus,
-            feed: mode == nil ? nil : try? Data(contentsOf: feedFile),
+            feed: mode == "fetch" ? try? Data(contentsOf: feedFile) : nil,
+            toolsInstalled: fileManager.isExecutableFile(atPath: signUpdate),
+            appcast: try? String(contentsOf: dir.appendingPathComponent("site/appcast.xml"), encoding: .utf8),
+            foreignFileSurvived: fileManager.fileExists(atPath: foreignFile.path),
             curlCalls: calls.split(separator: "\n").map { line in
                 line.split(separator: "\u{1F}", omittingEmptySubsequences: false).dropLast().map(String.init)
             },

@@ -70,8 +70,9 @@ nonisolated enum AppcastWorkflowSources {
 
     /// The step whose `run:` line is exactly `line`.
     ///
-    /// `appcast.sh` runs twice — `fetch` before the release is published, the
-    /// build after — so "the step containing appcast.sh" no longer names one step.
+    /// `appcast.sh` runs three times — `tools` and `fetch` before the release is
+    /// published, the build after — so "the step containing appcast.sh" no
+    /// longer names one step.
     static func step(running line: String, in workflow: String) -> String? {
         steps(in: workflow).first { step in
             step.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "run: \(line)" }
@@ -80,6 +81,10 @@ nonisolated enum AppcastWorkflowSources {
 
     static func feedFetchStep(in workflow: String) throws -> String {
         try #require(step(running: "scripts/appcast.sh fetch", in: workflow), "no step runs scripts/appcast.sh fetch")
+    }
+
+    static func toolsFetchStep(in workflow: String) throws -> String {
+        try #require(step(running: "scripts/appcast.sh tools", in: workflow), "no step runs scripts/appcast.sh tools")
     }
 
     static func appcastBuildStep(in workflow: String) throws -> String {
@@ -96,13 +101,14 @@ struct AppcastWorkflowTests {
 
     static let prereleaseGuard = "if: ${{ !contains(github.ref_name, '-') }}"
 
-    /// The six publication steps, identified by their names or what they run.
+    /// The seven publication steps, identified by their names or what they run.
     ///
     /// The guard is one of them: it is the step that decides whether this commit
     /// may publish a feed at all, so a prerelease must skip it for the same
     /// reason a prerelease skips the deploy.
     static let publicationMarkers = [
         "Refuse a second feed deployment from this commit",
+        "- name: Fetch the Sparkle tools",
         "- name: Fetch the live feed",
         "- name: Build the appcast",
         "actions/configure-pages",
@@ -122,9 +128,8 @@ struct AppcastWorkflowTests {
     /// 404s — and the feed, once served, is what every installed copy trusts.
     @Test("The appcast step runs after the release is published")
     func theAppcastStepRunsAfterTheReleaseIsPublished() throws {
-        let steps = AppcastWorkflowSources.steps(in: try AppcastWorkflowSources.workflow())
-
         let workflow = try AppcastWorkflowSources.workflow()
+        let steps = AppcastWorkflowSources.steps(in: workflow)
         let build = try AppcastWorkflowSources.appcastBuildStep(in: workflow)
 
         let publish = try #require(steps.firstIndex { $0.contains("gh release create") })
@@ -135,12 +140,16 @@ struct AppcastWorkflowTests {
         #expect(steps.count > 10)
     }
 
-    /// The live feed is fetched and validated **before** the release exists.
+    /// The live feed is fetched and validated **before** the release exists, and
+    /// the build step reads the same file.
     ///
     /// A fetch failure after `gh release create` would strand a published
     /// release with no feed item. Fetched first, a Pages or CDN error stops the
-    /// run while nothing is public yet. The build step then reads that file
-    /// instead of fetching again, so it cannot fail on the network after Publish.
+    /// run while nothing is public yet. Asserted here: the fetch step sits after
+    /// Notarize and before Publish, both steps name the same `CURRENT_FEED_FILE`,
+    /// the fetch reads the bundle's feed URL, and it holds no secret. That the
+    /// build never re-fetches is the script's behaviour, covered by
+    /// `AppcastScriptContractTests.theBuildRefusesAMissingPreFetchedFeed`.
     @Test("The live feed is fetched before the release is published")
     func theLiveFeedIsFetchedBeforeTheReleaseIsPublished() throws {
         let workflow = try AppcastWorkflowSources.workflow()
@@ -163,14 +172,46 @@ struct AppcastWorkflowTests {
         #expect(!fetch.contains("secrets."))
     }
 
+    /// The Sparkle tools are downloaded and verified **before** the release
+    /// exists, and the build step signs with them.
+    ///
+    /// A download failure after `gh release create` would strand a published
+    /// release with no feed item, exactly like a feed fetch failure. Asserted
+    /// here: the tools step sits after Notarize and before Publish, both it and
+    /// the build name the same `SPARKLE_TOOLS_DIR`, and the download holds no
+    /// secret. That the build never downloads when the directory is set is the
+    /// script's behaviour, covered by
+    /// `AppcastScriptContractTests.theBuildRefusesMissingPreFetchedTools`.
+    @Test("The Sparkle tools are fetched before the release is published")
+    func theSparkleToolsAreFetchedBeforeTheReleaseIsPublished() throws {
+        let workflow = try AppcastWorkflowSources.workflow()
+        let steps = AppcastWorkflowSources.steps(in: workflow)
+        let tools = try AppcastWorkflowSources.toolsFetchStep(in: workflow)
+        let build = try AppcastWorkflowSources.appcastBuildStep(in: workflow)
+
+        let toolsIndex = try #require(steps.firstIndex(of: tools))
+        let buildIndex = try #require(steps.firstIndex(of: build))
+        let publish = try #require(steps.firstIndex { $0.contains("gh release create") })
+        let notarize = try #require(steps.firstIndex { $0.contains("scripts/release.sh notarize") })
+        #expect(notarize < toolsIndex)
+        #expect(toolsIndex < publish)
+        #expect(publish < buildIndex)
+
+        let directory = "SPARKLE_TOOLS_DIR: ${{ runner.temp }}/sparkle-tools"
+        #expect(tools.contains(directory))
+        #expect(build.contains(directory))
+        #expect(tools.contains(Self.prereleaseGuard))
+        #expect(!tools.contains("secrets."))
+    }
+
     /// Every publishing step is skipped on a prerelease tag.
     ///
-    /// All six, not just the first. The deploy step is the dangerous one: a
+    /// All seven, not just the first. The deploy step is the dangerous one: a
     /// prerelease that reached it with an empty artifact would replace the live
     /// site — Pages deploys are a full-site replacement — and blank the feed for
     /// every installed copy.
-    @Test("All six publication steps carry the prerelease guard")
-    func allSixPublicationStepsCarryThePrereleaseGuard() throws {
+    @Test("All seven publication steps carry the prerelease guard")
+    func allSevenPublicationStepsCarryThePrereleaseGuard() throws {
         let steps = AppcastWorkflowSources.steps(in: try AppcastWorkflowSources.workflow())
 
         var guarded = 0
@@ -179,7 +220,7 @@ struct AppcastWorkflowTests {
             #expect(step.contains(Self.prereleaseGuard), "\(marker) is not guarded")
             guarded += 1
         }
-        #expect(guarded == 6)
+        #expect(guarded == 7)
     }
 
     // MARK: - The job header

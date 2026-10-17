@@ -13,17 +13,23 @@
 # It never traces itself. Command tracing would echo the signing pipeline into
 # the job log, and the signing pipeline is where the private key is.
 #
-# Two modes, chosen by the first argument:
+# Three modes, chosen by the first argument:
+#   scripts/appcast.sh tools   download the pinned Sparkle tarball, check its
+#                              digest and extract it into SPARKLE_TOOLS_DIR, then
+#                              stop.
 #   scripts/appcast.sh fetch   fetch and validate the live feed into
-#                              CURRENT_FEED_FILE, then stop. The release workflow
-#                              runs this *before* `gh release create`, so a feed
-#                              that cannot be read stops the run while nothing is
-#                              public yet.
+#                              CURRENT_FEED_FILE, then stop.
 #   scripts/appcast.sh         build: sign, merge and emit. It reads
-#                              CURRENT_FEED_FILE when that is set (CI, after the
-#                              release exists, never touching the network for the
-#                              feed again); when it is unset it fetches the feed
-#                              itself with the same rules (a local run).
+#                              CURRENT_FEED_FILE and SPARKLE_TOOLS_DIR when they
+#                              are set (CI, after the release exists, never
+#                              touching the network again); for each one that is
+#                              unset it downloads with the same rules (a local
+#                              run).
+#
+# The release workflow runs `tools` and `fetch` *before* `gh release create`, so
+# a download that fails stops the run while nothing is public yet. A failed
+# `tools` or `fetch` also removes what an earlier run left at its destination,
+# so a stale copy can never be read as this run's.
 #
 # Environment contract:
 #   VERSION              marketing version, without the leading v (1.2.3)
@@ -35,8 +41,10 @@
 #                        required whenever this run fetches it
 #   CURRENT_FEED_FILE    the pre-fetched feed: written by `fetch`, read by the
 #                        build; optional for the build
-#   FEED_FETCH_RETRY_DELAY  seconds before the first retry (default 5); the
-#                        delay doubles on each later one
+#   SPARKLE_TOOLS_DIR    the pre-fetched, verified Sparkle tools: written by
+#                        `tools`, read by the build; optional for the build
+#   FETCH_RETRY_DELAY    seconds before the first retry of any download
+#                        (default 5); the delay doubles on each later one
 #   OUTPUT_DIR           where appcast.xml is written; never the repository tree
 #   SPARKLE_PRIVATE_KEY  the EdDSA private key, read on **stdin only**
 #
@@ -47,9 +55,9 @@ set -euo pipefail
 
 MODE="${1:-build}"
 case "$MODE" in
-	fetch | build) ;;
+	tools | fetch | build) ;;
 	*)
-		echo "usage: scripts/appcast.sh [fetch]" >&2
+		echo "usage: scripts/appcast.sh [tools | fetch]" >&2
 		exit 2
 		;;
 esac
@@ -61,7 +69,7 @@ esac
 # because the feed is the thing being trusted.
 case "$GITHUB_REF_NAME" in
 	*-*)
-		echo "prerelease $GITHUB_REF_NAME: no appcast item, no feed fetch"
+		echo "prerelease $GITHUB_REF_NAME: no appcast item, no download"
 		exit 0
 		;;
 esac
@@ -74,6 +82,10 @@ esac
 SPARKLE_VERSION="2.9.6"
 SPARKLE_TARBALL_SHA256="52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192"
 SPARKLE_TARBALL_URL="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+# Written into SPARKLE_TOOLS_DIR by `tools`, holding the digest it verified. The
+# build only trusts a directory whose marker names the digest pinned above, and
+# `tools` only ever deletes a directory that carries it.
+SPARKLE_TOOLS_MARKER=".pinned-sha256"
 
 # The app's own deployment target. It must equal
 # `AppcastDocument.expectedMinimumSystemVersion`, and
@@ -96,20 +108,27 @@ MINIMUM_SYSTEM_VERSION="26.5"
 # "first release" would replace the live feed with a one-item feed. `curl -f`
 # is deliberately not used here: it folds a 404 and a 503 into one exit status.
 #
-# Every attempt is bounded (`--connect-timeout`, `--max-time`), so a stalled
-# endpoint cannot hold the signing job. Transient failures are retried by the
-# loop below rather than by curl's own `--retry`: that flag retries timeouts and
-# 408/429/5xx, but not a DNS failure or a dropped connection, and its
-# `--retry-all-errors` widening would retry a 404 too. Here a retry happens only
-# for curl exits 6 (DNS), 7 (connect), 28 (timeout), 35 (TLS handshake), 52
-# (empty reply), 55/56 (send/receive) and for HTTP 408, 429 and 5xx. A 200 and a
-# 404 are answers, never retried; any other 4xx is refused at once. Four
-# attempts, 5 s, 10 s and 20 s apart: worst case about four minutes.
-FEED_FETCH_ATTEMPTS=4
-FEED_FETCH_RETRY_DELAY="${FEED_FETCH_RETRY_DELAY:-5}"
+# Every download (the feed here, the Sparkle tarball below) goes through one
+# helper, so both are bounded and retried the same way. Every attempt is bounded
+# (`--connect-timeout`, `--max-time`), so a stalled endpoint cannot hold the
+# signing job. Transient failures are retried by the loop below rather than by
+# curl's own `--retry`: that flag retries timeouts and 408/429/5xx, but not a
+# DNS failure or a dropped connection, and its `--retry-all-errors` widening
+# would retry a 404 too. Here a retry happens only for curl exits 6 (DNS), 7
+# (connect), 28 (timeout), 35 (TLS handshake), 52 (empty reply), 55/56
+# (send/receive) and for HTTP 408, 429 and 5xx. A 200 and a 404 are answers,
+# never retried; any other 4xx is refused at once. Four attempts, 5 s, 10 s and
+# 20 s apart.
+FETCH_ATTEMPTS=4
+FETCH_RETRY_DELAY="${FETCH_RETRY_DELAY:-5}"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+STAGED=""
+cleanup() {
+	rm -rf "$WORK"
+	if [ -n "$STAGED" ]; then rm -rf "$STAGED"; fi
+}
+trap cleanup EXIT
 
 # A usable feed: non-empty, with a closing channel tag to insert before.
 require_feed() {
@@ -140,28 +159,38 @@ is_transient() {
 	esac
 }
 
-# Fetch the live feed into $1, or exit 1 having written nothing there.
-fetch_feed() {
-	local dest="$1" body="$WORK/fetched.xml" attempt=1 delay="$FEED_FETCH_RETRY_DELAY" status curl_exit
-	echo "==> fetch $FEED_URL"
+# download URL BODY MAX_TIME: the one curl call site. Leaves the last attempt's
+# curl exit in DOWNLOAD_EXIT, its HTTP status in DOWNLOAD_STATUS and the attempt
+# count in DOWNLOAD_ATTEMPTS; deciding what they mean is the caller's job.
+download() {
+	local url="$1" body="$2" max_time="$3" delay="$FETCH_RETRY_DELAY"
+	DOWNLOAD_ATTEMPTS=1
+	echo "==> fetch $url"
 	while :; do
 		rm -f "$body"
-		curl_exit=0
-		status="$(curl -sSL --connect-timeout 10 --max-time 60 -w '%{http_code}' -o "$body" "$FEED_URL")" || curl_exit=$?
-		if [ "$attempt" -ge "$FEED_FETCH_ATTEMPTS" ] || ! is_transient "$curl_exit" "$status"; then
-			break
+		DOWNLOAD_EXIT=0
+		DOWNLOAD_STATUS="$(curl -sSL --connect-timeout 10 --max-time "$max_time" -w '%{http_code}' -o "$body" "$url")" ||
+			DOWNLOAD_EXIT=$?
+		if [ "$DOWNLOAD_ATTEMPTS" -ge "$FETCH_ATTEMPTS" ] || ! is_transient "$DOWNLOAD_EXIT" "$DOWNLOAD_STATUS"; then
+			return 0
 		fi
-		echo "    attempt $attempt: curl exit $curl_exit, HTTP $status; retrying in ${delay}s"
+		echo "    attempt $DOWNLOAD_ATTEMPTS: curl exit $DOWNLOAD_EXIT, HTTP $DOWNLOAD_STATUS; retrying in ${delay}s"
 		sleep "$delay"
-		attempt=$((attempt + 1))
+		DOWNLOAD_ATTEMPTS=$((DOWNLOAD_ATTEMPTS + 1))
 		delay=$((delay * 2))
 	done
+}
 
-	if [ "$curl_exit" -ne 0 ]; then
-		echo "could not fetch $FEED_URL (curl exit $curl_exit, $attempt attempt(s)); refusing to replace the live feed" >&2
+# Fetch the live feed into $1, or exit 1 having written nothing there.
+fetch_feed() {
+	local dest="$1" body="$WORK/fetched.xml"
+	download "$FEED_URL" "$body" 60
+
+	if [ "$DOWNLOAD_EXIT" -ne 0 ]; then
+		echo "could not fetch $FEED_URL (curl exit $DOWNLOAD_EXIT, $DOWNLOAD_ATTEMPTS attempt(s)); refusing to replace the live feed" >&2
 		exit 1
 	fi
-	case "$status" in
+	case "$DOWNLOAD_STATUS" in
 		200)
 			require_feed "$body" "$FEED_URL (HTTP 200)"
 			;;
@@ -183,7 +212,7 @@ fetch_feed() {
 			XML
 			;;
 		*)
-			echo "$FEED_URL answered HTTP $status ($attempt attempt(s)); refusing to replace the live feed" >&2
+			echo "$FEED_URL answered HTTP $DOWNLOAD_STATUS ($DOWNLOAD_ATTEMPTS attempt(s)); refusing to replace the live feed" >&2
 			exit 1
 			;;
 	esac
@@ -191,9 +220,75 @@ fetch_feed() {
 	mv "$body" "$dest"
 }
 
+# --- tool --------------------------------------------------------------------
+# Download the pinned tarball, verify its digest and extract it into $1, or exit
+# 1 having installed nothing there. The tree is staged next to $1 and renamed
+# into place only once it is complete and verified, so a failure part-way never
+# leaves a usable-looking directory behind. A 404 here is a failure like any
+# other: there is no "first release" of a pinned tarball.
+install_tools() {
+	local dest="$1" tarball="$WORK/sparkle.tar.xz"
+	echo "==> tool Sparkle $SPARKLE_VERSION"
+	download "$SPARKLE_TARBALL_URL" "$tarball" 300
+	if [ "$DOWNLOAD_EXIT" -ne 0 ] || [ "$DOWNLOAD_STATUS" != 200 ]; then
+		echo "could not download $SPARKLE_TARBALL_URL (curl exit $DOWNLOAD_EXIT, HTTP $DOWNLOAD_STATUS, $DOWNLOAD_ATTEMPTS attempt(s))" >&2
+		exit 1
+	fi
+	if ! printf '%s  %s\n' "$SPARKLE_TARBALL_SHA256" "$tarball" | shasum -a 256 -c - > /dev/null; then
+		echo "the Sparkle $SPARKLE_VERSION tarball does not match the pinned digest $SPARKLE_TARBALL_SHA256; refusing to sign with it" >&2
+		exit 1
+	fi
+	mkdir -p "$(dirname "$dest")"
+	STAGED="$(mktemp -d "$(dirname "$dest")/.sparkle-tools.XXXXXX")"
+	tar -xJf "$tarball" -C "$STAGED"
+	if [ ! -x "$STAGED/bin/sign_update" ]; then
+		echo "the Sparkle $SPARKLE_VERSION tarball has no bin/sign_update" >&2
+		exit 1
+	fi
+	printf '%s\n' "$SPARKLE_TARBALL_SHA256" > "$STAGED/$SPARKLE_TOOLS_MARKER"
+	mv "$STAGED" "$dest"
+	STAGED=""
+}
+
+# Tools another step installed are used only if they carry the marker for the
+# digest pinned in this script.
+require_tools() {
+	local dir="$1"
+	if [ ! -x "$dir/bin/sign_update" ] || [ ! -f "$dir/$SPARKLE_TOOLS_MARKER" ] ||
+		[ "$(< "$dir/$SPARKLE_TOOLS_MARKER")" != "$SPARKLE_TARBALL_SHA256" ]; then
+		echo "the pre-fetched Sparkle tools in $dir are missing or were not verified against $SPARKLE_TARBALL_SHA256; refusing to sign" >&2
+		exit 1
+	fi
+}
+
+# Remove what an earlier `tools` run installed at $1. A directory without the
+# marker was not written by this script and is never deleted: SPARKLE_TOOLS_DIR
+# comes from the environment, and a mistyped path must not become `rm -rf`.
+clear_tools() {
+	local dir="$1"
+	[ -e "$dir" ] || return 0
+	rmdir "$dir" 2> /dev/null && return 0
+	if [ ! -f "$dir/$SPARKLE_TOOLS_MARKER" ]; then
+		echo "$dir exists and was not written by scripts/appcast.sh tools; refusing to replace it" >&2
+		exit 1
+	fi
+	rm -rf "$dir"
+}
+
+if [ "$MODE" = tools ]; then
+	SPARKLE_TOOLS_DIR="${SPARKLE_TOOLS_DIR:?SPARKLE_TOOLS_DIR is required}"
+	clear_tools "$SPARKLE_TOOLS_DIR"
+	install_tools "$SPARKLE_TOOLS_DIR"
+	echo "==> installed $SPARKLE_TOOLS_DIR"
+	exit 0
+fi
+
 if [ "$MODE" = fetch ]; then
 	FEED_URL="${FEED_URL:?FEED_URL is required}"
 	CURRENT_FEED_FILE="${CURRENT_FEED_FILE:?CURRENT_FEED_FILE is required}"
+	# Gone before the first attempt, so a refused fetch can never leave an
+	# earlier run's feed where the build will read it.
+	rm -f "$CURRENT_FEED_FILE"
 	fetch_feed "$CURRENT_FEED_FILE"
 	echo "==> fetched $CURRENT_FEED_FILE"
 	exit 0
@@ -217,11 +312,15 @@ else
 	fetch_feed "$WORK/current.xml"
 fi
 
-# --- tool --------------------------------------------------------------------
-echo "==> tool Sparkle $SPARKLE_VERSION"
-curl -fsSL -o "$WORK/sparkle.tar.xz" "$SPARKLE_TARBALL_URL"
-printf '%s  %s\n' "$SPARKLE_TARBALL_SHA256" "$WORK/sparkle.tar.xz" | shasum -a 256 -c -
-tar -xJf "$WORK/sparkle.tar.xz" -C "$WORK"
+# Pre-fetched tools are read, never re-downloaded, for the same reason.
+if [ -n "${SPARKLE_TOOLS_DIR:-}" ]; then
+	echo "==> tool $SPARKLE_TOOLS_DIR"
+	TOOLS="$SPARKLE_TOOLS_DIR"
+else
+	TOOLS="$WORK/sparkle-tools"
+	install_tools "$TOOLS"
+fi
+require_tools "$TOOLS"
 
 # --- sign --------------------------------------------------------------------
 # The key arrives on standard input and is never a file, never an argument, and
@@ -229,7 +328,7 @@ tar -xJf "$WORK/sparkle.tar.xz" -C "$WORK"
 # the key from a secret environment binding without writing it down anywhere.
 # Under `set -u` an unset key aborts here rather than signing with nothing.
 echo "==> sign $ZIP_PATH"
-FRAGMENT="$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$WORK/bin/sign_update" --ed-key-file - "$ZIP_PATH")"
+FRAGMENT="$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$TOOLS/bin/sign_update" --ed-key-file - "$ZIP_PATH")"
 
 # The signing tool's output shape is an input to this script, so it is checked
 # rather than assumed. Both attributes are required by Burnbar's offline

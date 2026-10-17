@@ -17,7 +17,7 @@ Three files, split by ownership:
 |---|---|
 | `.github/workflows/release.yml` | The runner, the secrets, the ephemeral keychain, cleanup, and publication: everything that only exists on CI |
 | `scripts/release.sh` | The build sequence: archive → export → package → notarize → staple → verify |
-| `scripts/appcast.sh` | The update feed: fetch, verify the pinned signing tool, sign one zip, merge one item, emit |
+| `scripts/appcast.sh` | The update feed: download and verify the pinned signing tool, fetch the live feed, sign one zip, merge one item, emit |
 
 `scripts/release.sh` is a **rehearsal path, not a publishing path**. It contains no
 version-control and no release-management invocation, so it can neither select a repository
@@ -104,9 +104,10 @@ Then watch the run under the repository's Actions tab:
 | Notarize | `notarytool submit --wait` | Apple rejects it; the diagnostic log is printed |
 | Staple | Staples the ticket and repackages | Stapling fails |
 | Verify | Gates against the copy extracted from the zip | Any gate |
+| Fetch the Sparkle tools | `scripts/appcast.sh tools`: downloads the pinned Sparkle 2.9.6 tarball, checks its SHA-256 and extracts it into `$RUNNER_TEMP`, before anything is public (stable tags only) | A download failure after bounded retries, or a digest mismatch |
 | Fetch the live feed | `scripts/appcast.sh fetch`: fetches and validates the live feed into `$RUNNER_TEMP`, before anything is public (stable tags only) | Anything but a usable 200 or a 404, after bounded retries |
 | Publish | `gh release create --verify-tag --generate-notes` | — |
-| Build the appcast | Reads the pre-fetched feed (never fetches it again), signs the zip and writes the whole feed outside the checkout | The pre-fetched feed is missing, or signing or emission fails (stable tags only) |
+| Build the appcast | Reads the pre-fetched feed and tools (never downloads either again), signs the zip and writes the whole feed outside the checkout | The pre-fetched feed or tools are missing, or signing or emission fails (stable tags only) |
 | Configure Pages / Upload / Deploy | Deploys that directory under this commit | The deployment fails |
 | Cleanup | Deletes the keychain and the API key, always | — |
 
@@ -120,29 +121,36 @@ as "no feed yet" (the first release) and starts an empty channel. A DNS failure,
 5xx or any other status, and a 200 whose body is empty or has no `</channel>`, all stop the
 run, so a transient error can never replace the live feed with a one-item feed.
 
-**The feed is fetched before the release is published.** The "Fetch the live feed" step runs
-right before Publish, so a Pages or CDN failure stops the run while nothing is public and the
-tag can simply be re-run or re-tagged. Each attempt is bounded (`--connect-timeout 10`,
-`--max-time 60`). Transient failures are retried, four attempts in all, 5 s, 10 s and 20 s
-apart: curl exits 6 (DNS), 7 (connect), 28 (timeout), 35 (TLS handshake), 52, 55 and 56
-(dropped connection), and HTTP 408, 429 and 5xx. A 200 and a 404 are never retried, and any
-other 4xx is refused at once. The build step after Publish reads that file and does not touch
-the network for the feed again.
+**Everything the appcast needs from the network is downloaded before the release is
+published.** "Fetch the Sparkle tools" and "Fetch the live feed" run right before Publish, so a
+github.com, Pages or CDN failure stops the run while nothing is public and the tag can simply be
+re-run or re-tagged. Both go through one download helper. Each attempt is bounded
+(`--connect-timeout 10`, and `--max-time 60` for the feed, 300 for the tarball). Transient
+failures are retried, four attempts in all, 5 s, 10 s and 20 s apart: curl exits 6 (DNS), 7
+(connect), 28 (timeout), 35 (TLS handshake), 52, 55 and 56 (dropped connection), and HTTP 408,
+429 and 5xx. A 200 and a 404 are never retried, and any other 4xx is refused at once; for the
+tarball a 404 is a failure too. The tarball must match the pinned SHA-256 before it is
+extracted. A failed fetch also removes what an earlier run left at its destination, so a stale
+feed or tools directory is never read as this run's. The build step after Publish reads both
+and does not touch the network again.
 
 ### When a run fails
 
 Where the run stopped decides what is already public. `gh release create` is the line.
 
 **Before Publish** (both gates, Pin Xcode, keychain, Archive, Export, Package, Notarize,
-Staple, Verify, signing evidence, Fetch the live feed): nothing was published. Fix the cause, delete the tag and
-tag again; the same commit is fine.
+Staple, Verify, signing evidence, Fetch the Sparkle tools, Fetch the live feed): nothing was
+published. A transient download failure needs no fix: **Re-run failed jobs**. Otherwise fix the
+cause, delete the tag and tag again; the same commit is fine.
 
 ```sh
 git push --delete origin v1.0.0
 git tag -d v1.0.0
 ```
 
-**After Publish** (Build the appcast, Configure Pages, Upload, Deploy): the GitHub release and
+**After Publish** (Build the appcast, Configure Pages, Upload, Deploy): none of them downloads
+anything any more, so what fails here is signing (a wrong or missing `SPARKLE_PRIVATE_KEY`, a
+signing-tool output the script refuses), emission, or the Pages upload and deployment. The GitHub release and
 its zip **already exist** and are `releases/latest`, but the feed was not updated, so no
 installed copy is offered the version. The Homebrew tap's scheduled bump, or anyone browsing
 the releases page, may already have picked it up. There is no step-level retry: **Re-run
@@ -222,15 +230,20 @@ FEED_URL=https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml \
 OUTPUT_DIR=/tmp/site SPARKLE_PRIVATE_KEY="$(cat ~/offline/sparkle-private.key)" scripts/appcast.sh
 ```
 
-Without `CURRENT_FEED_FILE` the build fetches the feed itself, with the same timeouts, retries
-and refusals. To rehearse CI's two steps, or only check that the live feed is readable:
+Without `CURRENT_FEED_FILE` the build fetches the feed itself, and without `SPARKLE_TOOLS_DIR`
+it downloads and verifies the Sparkle tools itself, with the same timeouts, retries and
+refusals. To rehearse CI's steps, or only check that the downloads work:
 
 ```sh
+GITHUB_REF_NAME=v1.0.0 SPARKLE_TOOLS_DIR=/tmp/sparkle-tools scripts/appcast.sh tools
 GITHUB_REF_NAME=v1.0.0 FEED_URL=https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml \
 CURRENT_FEED_FILE=/tmp/current-appcast.xml scripts/appcast.sh fetch
 ```
 
-Then pass the same `CURRENT_FEED_FILE` to the build above instead of `FEED_URL`.
+Then pass the same `SPARKLE_TOOLS_DIR` and `CURRENT_FEED_FILE` to the build above instead of
+`FEED_URL`. `tools` only ever replaces a directory it wrote itself (it carries a
+`.pinned-sha256` marker); it refuses any other existing, non-empty directory.
+`FETCH_RETRY_DELAY` (default 5) sets the first retry delay of both downloads.
 
 ## 6. Entitlements and hardened runtime
 
@@ -328,9 +341,14 @@ the new version on a new commit and tag that.
 404, or could not be reached, on every attempt. Nothing was published: check the feed URL in
 a browser, then re-run the job or re-tag ("Before Publish" in 3).
 
-**Build the appcast failed.** The feed was fetched before Publish, so this is signing,
-emission, the signing tool's download, or a missing pre-fetched file. The release already
-exists; follow "After Publish" in 3.
+**Fetch the Sparkle tools failed.** The Sparkle 2.9.6 tarball could not be downloaded on
+every attempt, or it did not match the pinned SHA-256. Nothing was published. A download
+failure is usually transient: re-run the job. A digest mismatch means the asset on
+github.com changed; do not update the digest without finding out why ("Before Publish" in 3).
+
+**Build the appcast failed.** The feed and the tools were fetched before Publish, so this is
+signing (the `SPARKLE_PRIVATE_KEY` secret), emission, or a missing pre-fetched feed or tools
+directory. The release already exists; follow "After Publish" in 3.
 
 **The run is green but the feed still shows the previous version.** Usually the CDN; compare
 `last-modified` on the feed URL. A hyphenated tag skips every publication step by design.
