@@ -137,6 +137,21 @@ final class UsageStoreTests {
         #expect(sut.state.provider(.claude)?.samples["Session (5-hour)"]?.map(\.percent) == [0.28, 0.30])
     }
 
+    @Test func theBurndownOnlyShowsSamplesOfTheSnapshotsAccount() async throws {
+        let base = limitSnapshot(.claude, fiveHour: 0.3, weekly: 0.42)
+        claudeLimits.set(LimitSnapshot(provider: .claude, rows: base.rows, measuredAt: base.measuredAt, account: "account-a-key"))
+        samples.seed(.claude, label: "Weekly (7-day)", [
+            LimitSample(t: now.addingTimeInterval(-3600), percent: 0.90, account: "account-b-key"),
+            LimitSample(t: now.addingTimeInterval(-2400), percent: 0.10),
+            LimitSample(t: now.addingTimeInterval(-1200), percent: 0.40, account: "account-a-key"),
+        ])
+        let sut = store()
+        await sut.refresh()
+
+        // Another account's samples and legacy ones without an account stay out of pace and burndown.
+        #expect(sut.state.provider(.claude)?.samples["Weekly (7-day)"]?.map(\.percent) == [0.40])
+    }
+
     @Test func aMissingSnapshotKeepsTheLastOne() async throws {
         codexLimits.set(limitSnapshot(.codex, fiveHour: 0.1, weekly: 0.31))
         let sut = store()

@@ -158,6 +158,36 @@ final class LimitSampleStoreTests {
                 == [sample(at: -3600, 0.1), LimitSample(t: now, percent: 0.2, resetsAt: reset)])
     }
 
+    @Test func recordsTheSnapshotsAccountAndKeepsItAcrossInstances() async throws {
+        let reset = now.addingTimeInterval(24 * hour)
+        let snapshot = LimitSnapshot(provider: .claude, rows: [
+            LimitRow(label: weekly, percent: 0.2, resetsAt: reset, windowDuration: week),
+        ], measuredAt: now.addingTimeInterval(-60), account: "account-a-key")
+        await store().record(snapshot)
+        #expect(try lines().allSatisfy { $0.contains(#""account":"account-a-key""#) })
+
+        let reloaded = store()
+        #expect(await reloaded.samples(provider: .claude, label: weekly)
+                == [LimitSample(t: now.addingTimeInterval(-60), percent: 0.2, resetsAt: reset, account: "account-a-key")])
+    }
+
+    @Test func legacyLinesLoadWithoutAnAccount() async throws {
+        let legacy = #"{"label":"Weekly (7-day)","percent":0.1,"provider":"claude","resetsAt":\#(now.timeIntervalSince1970 + 3600),"t":\#(now.timeIntervalSince1970 - 60)}"#
+        try writeLines([legacy], to: file)
+        let loaded = try #require(await store().samples(provider: .claude, label: weekly).first)
+        #expect(loaded.account == nil)
+        #expect(loaded.percent == 0.1)
+    }
+
+    @Test func aSampleFromAnotherAccountIsStoredAtOnce() async throws {
+        let sut = store()
+        let reset = now.addingTimeInterval(24 * hour)
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-120), percent: 0.2, resetsAt: reset, account: "a"), provider: .claude, label: weekly))
+        // Same value and reset a minute later, but read for another account.
+        #expect(await sut.record(LimitSample(t: now.addingTimeInterval(-60), percent: 0.2, resetsAt: reset, account: "b"), provider: .claude, label: weekly))
+        #expect(await sut.samples(provider: .claude, label: weekly).map(\.account) == ["a", "b"])
+    }
+
     @Test func dropsOldAndMalformedLinesOnLoadAndCompacts() async throws {
         let old = #"{"provider":"claude","label":"Weekly (7-day)","t":\#(now.timeIntervalSince1970 - 8 * 24 * hour),"percent":0.1}"#
         let recent = #"{"provider":"claude","label":"Weekly (7-day)","t":\#(now.timeIntervalSince1970 - 3600),"percent":0.2}"#

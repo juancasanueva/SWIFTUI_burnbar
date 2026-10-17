@@ -127,3 +127,14 @@ func usageWindow(_ utilization: Double, resetsAt: String?) -> String {
     let reset = resetsAt.map { #""\#($0)""# } ?? "null"
     return #"{"utilization":\#(utilization),"resets_at":\#(reset)}"#
 }
+
+/// The account key the client sees as signed in; settable to stand in for an account switch.
+final class StubAccountKey: ClaudeAccountIdentifying {
+    private let key: Mutex<String?>
+
+    init(_ key: String?) { self.key = Mutex(key) }
+
+    func set(_ key: String?) { self.key.withLock { $0 = key } }
+
+    func claudeAccountKey() -> String? { key.withLock { $0 } }
+}

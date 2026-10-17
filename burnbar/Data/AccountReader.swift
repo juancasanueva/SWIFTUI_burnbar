@@ -3,6 +3,7 @@
 //  burnbar
 //
 
+import CryptoKit
 import Foundation
 
 /// Which account each provider's CLI is signed in as; injectable for tests.
@@ -11,33 +12,59 @@ nonisolated protocol AccountReading: Sendable {
     func codex() -> AccountInfo?
 }
 
+/// A stable, opaque key for the Claude account signed in now; injectable for tests.
+nonisolated protocol ClaudeAccountIdentifying: Sendable {
+    /// Nil when no account can be determined.
+    func claudeAccountKey() -> String?
+}
+
 /// Reads which account each provider's CLI is signed in as, from its local config files.
 ///
-/// - Claude: `~/.claude.json` → `oauthAccount.{emailAddress, displayName, organizationName}`.
+/// - Claude: `~/.claude.json` → `oauthAccount.{emailAddress, displayName, organizationName}`;
+///   `claudeAccountKey()` hashes `accountUuid` + `organizationUuid` (else the email).
 /// - Codex: `~/.codex/auth.json` → the `tokens.id_token` JWT payload's `email`/`name` (decoded,
 ///   not verified; it is only a label), else `AccountInfo.apiKey` when `OPENAI_API_KEY` is set.
 ///
 /// Only these fields are decoded; tokens are never kept or logged.
-nonisolated struct AccountReader: AccountReading {
+nonisolated struct AccountReader: AccountReading, ClaudeAccountIdentifying {
     let home: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
     }
 
-    func claude() -> AccountInfo? {
-        struct Config: Decodable {
-            struct OAuthAccount: Decodable {
-                let emailAddress: String?
-                let displayName: String?
-                let organizationName: String?
-            }
-
-            let oauthAccount: OAuthAccount?
+    private struct ClaudeConfig: Decodable {
+        struct OAuthAccount: Decodable {
+            let accountUuid: String?
+            let organizationUuid: String?
+            let emailAddress: String?
+            let displayName: String?
+            let organizationName: String?
         }
 
-        guard let account = decode(Config.self, at: ".claude.json")?.oauthAccount else { return nil }
+        let oauthAccount: OAuthAccount?
+    }
+
+    func claude() -> AccountInfo? {
+        guard let account = decode(ClaudeConfig.self, at: ".claude.json")?.oauthAccount else { return nil }
         return Self.account(email: account.emailAddress, name: account.displayName, organization: account.organizationName)
+    }
+
+    /// A truncated SHA-256 (32 hex digits) of the account id and organization id, or of the
+    /// lowercased email when there is no account id; nil when neither is known. Only the hash
+    /// leaves this function, so no identity is written to disk.
+    func claudeAccountKey() -> String? {
+        guard let account = decode(ClaudeConfig.self, at: ".claude.json")?.oauthAccount else { return nil }
+        func nonEmpty(_ text: String?) -> String? { text.flatMap { $0.isEmpty ? nil : $0 } }
+        let identity: String
+        if let id = nonEmpty(account.accountUuid) {
+            identity = "account:\(id)|organization:\(nonEmpty(account.organizationUuid) ?? "")"
+        } else if let email = nonEmpty(account.emailAddress) {
+            identity = "email:\(email.lowercased())"
+        } else {
+            return nil
+        }
+        return SHA256.hash(data: Data(identity.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
     func codex() -> AccountInfo? {
