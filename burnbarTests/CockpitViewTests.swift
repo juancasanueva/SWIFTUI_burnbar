@@ -26,6 +26,15 @@ struct CockpitViewTests {
             .environment(\.colorScheme, .dark)
     }
 
+    @Test func footerHintNamesWhatMakesACardGlow() {
+        let howToRead = "the dashed diagonal is an even spend: a line above it is over budget · click a headline to flip budget and tokens · "
+        #expect(CockpitView.hint(glowWhen: .never) == howToRead + "cards never glow (SETUP)")
+        #expect(CockpitView.hint(glowWhen: .over) == howToRead + "a card glows for: over pace (SETUP)")
+        #expect(CockpitView.hint(glowWhen: .burning).hasSuffix("a card glows for: burning now (SETUP)"))
+        #expect(CockpitView.hint(glowWhen: .spent).hasSuffix("a card glows for: budget spent (SETUP)"))
+        #expect(GlowWhen.never.phrase == "no glow")
+    }
+
     /// One fixed-width column per card, side by side.
     @Test func rendersTheFixtureCockpitOneColumnPerCard() throws {
         let advice = AdviceBanner(advice: .useNext(.codex), cards: CockpitPreview.cards)
