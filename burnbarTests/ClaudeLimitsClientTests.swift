@@ -150,6 +150,18 @@ struct ClaudeLimitsClientTests {
         #expect(snapshot.measuredAt == now.addingTimeInterval(300))
     }
 
+    @Test func persistedRowsStayHiddenAfterASignOutUntilALiveReading() async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400))])
+        let transport = StubTransport([.status(401, "{}"), .failure(.timedOut), .status(200, fullBody)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples)
+        _ = await sut.limits(now: now)
+
+        let unreachable = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(unreachable.rows.isEmpty)
+        #expect(await sut.limits(now: now.addingTimeInterval(600))?.limitsLive == true)
+    }
+
     @Test func aMissingSignInDropsThePersistedRows() async throws {
         let samples = StubSampleStore()
         samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400))])

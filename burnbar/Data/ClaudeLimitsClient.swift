@@ -52,6 +52,9 @@ actor ClaudeLimitsClient: LimitsSource {
     private var current: LimitSnapshot?
     /// The latest successful snapshot, whose rows failures keep showing.
     private var lastLive: LimitSnapshot?
+    /// Set by a missing or rejected sign-in: persisted samples may belong to another account
+    /// until a live reading confirms the current one.
+    private var persistedUntrusted = false
     private var lastAttempt: Date?
     private var backoffInterval: TimeInterval?
     private var backoffUntil: Date?
@@ -129,6 +132,7 @@ actor ClaudeLimitsClient: LimitsSource {
             backoffUntil = nil
             let snapshot = LimitSnapshot(provider: .claude, rows: usage.rows(now: now), measuredAt: now)
             lastLive = snapshot
+            persistedUntrusted = false
             return snapshot
         case 401, 403:
             cachedCredentials = nil
@@ -191,6 +195,7 @@ actor ClaudeLimitsClient: LimitsSource {
     /// reading nor the persisted samples are shown, and the last live reading is forgotten.
     private func signedOut(_ status: String, now: Date) -> LimitSnapshot {
         lastLive = nil
+        persistedUntrusted = true
         return LimitSnapshot(provider: .claude, rows: [], measuredAt: now, status: status, limitsLive: false)
     }
 
@@ -211,7 +216,7 @@ actor ClaudeLimitsClient: LimitsSource {
     /// measured at the oldest of those samples so no row looks fresher than it is; nil when there is none. Window lengths come from
     /// `ClaudeUsageResponse.layout`; samples without a reported reset cannot be placed and are skipped.
     private func lastPersisted(now: Date) async -> LimitSnapshot? {
-        guard let samples else { return nil }
+        guard let samples, !persistedUntrusted else { return nil }
         var rows: [LimitRow] = []
         var measuredAt: Date?
         for (_, label, minutes) in ClaudeUsageResponse.layout {
