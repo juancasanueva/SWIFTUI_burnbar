@@ -201,6 +201,23 @@ struct ClaudeLimitsClientTests {
         #expect(live.rows.count == 4)
     }
 
+    @Test func liveReadingThisLaunchWinsOverThePersistedSamples() async throws {
+        let weeklyReset = now.addingTimeInterval(3 * 86_400)
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.66, resetsAt: weeklyReset)])
+        samples.seed(.claude, label: "Session (5-hour)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.77, resetsAt: weeklyReset)])
+        let transport = StubTransport([.status(200, fullBody), .status(429, "{}")])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples)
+        let live = try #require(await sut.limits(now: now))
+
+        let limited = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(limited.rows == live.rows)
+        #expect(limited.rows.map(\.percent) == [0.42, 0.175, 0.03, 0.09])
+        #expect(limited.measuredAt == now)
+        #expect(limited.limitsLive == false)
+        #expect(limited.status?.hasPrefix("Claude limits rate-limited") == true)
+    }
+
     @Test func failureWithoutLiveReadingOrSamplesHasNoRows() async throws {
         let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]), samples: StubSampleStore())
         let snapshot = try #require(await sut.limits(now: now))
