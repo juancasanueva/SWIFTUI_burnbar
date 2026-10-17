@@ -1,4 +1,4 @@
-# burnbar for macOS
+<h1 align="center"><img src="burnbar/Assets.xcassets/AppIcon.appiconset/icon_256.png" width="96" alt="Burnbar icon" align="absmiddle"> Burnbar</h1>
 
 A native macOS menu bar app that shows how fast you are burning through your Claude and Codex plan limits, and which one to use next.
 
