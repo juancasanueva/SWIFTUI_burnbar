@@ -135,16 +135,28 @@ struct ClaudeLimitsClientTests {
     }
 
     @Test(arguments: [401, 403])
-    func rejectedTokenAsksToSignInAgainAndKeepsTheLastRows(code: Int) async throws {
+    func rejectedTokenAsksToSignInAgainAndDropsTheLastRows(code: Int) async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400))])
         let transport = StubTransport([.status(200, fullBody), .status(code, #"{"error":"x"}"#)])
-        let sut = client(transport)
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples)
         _ = await sut.limits(now: now)
 
+        // The rows may belong to another account: neither the live nor the persisted ones are shown.
         let snapshot = try #require(await sut.limits(now: now.addingTimeInterval(300)))
         #expect(snapshot.status == "Claude Code sign-in was rejected — run claude to sign in again")
         #expect(snapshot.limitsLive == false)
-        #expect(snapshot.rows.count == 4)
-        #expect(snapshot.measuredAt == now)
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.measuredAt == now.addingTimeInterval(300))
+    }
+
+    @Test func aMissingSignInDropsThePersistedRows() async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400))])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(.success(nil)), transport: StubTransport([]), samples: samples)
+        let snapshot = try #require(await sut.limits(now: now))
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.status == "Claude Code sign-in not found — run claude to sign in")
     }
 
     @Test func rateLimitKeepsTheLastSnapshotAndBacksOffUpToThirtyMinutes() async throws {

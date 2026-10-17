@@ -64,6 +64,8 @@ actor ClaudeLimitsClient: LimitsSource {
     private enum CredentialsLookup {
         case found(ClaudeCredentials)
         case failed(String)
+        /// No sign-in at all: whatever was known may belong to another account.
+        case signedOut(String)
     }
 
     init(
@@ -107,6 +109,7 @@ actor ClaudeLimitsClient: LimitsSource {
         switch await lookUpCredentials(now: now, force: force) {
         case .found(let found): credentials = found
         case .failed(let status): return await degraded(status, now: now)
+        case .signedOut(let status): return signedOut(status, now: now)
         }
 
         let data: Data
@@ -129,7 +132,7 @@ actor ClaudeLimitsClient: LimitsSource {
             return snapshot
         case 401, 403:
             cachedCredentials = nil
-            return await degraded(Status.signInRejected, now: now)
+            return signedOut(Status.signInRejected, now: now)
         case 429:
             let local = min((backoffInterval ?? refreshInterval) * 2, maxBackoff)
             backoffInterval = local
@@ -154,12 +157,12 @@ actor ClaudeLimitsClient: LimitsSource {
             keychainFailed = false
         } catch KeychainError.status(errSecItemNotFound) {
             keychainFailed = false
-            return .failed(Status.signInNotFound)
+            return .signedOut(Status.signInNotFound)
         } catch {
             keychainFailed = true
             return .failed(Status.keychainUnreadable)
         }
-        guard let data, let parsed = ClaudeCredentials(data: data) else { return .failed(Status.signInNotFound) }
+        guard let data, let parsed = ClaudeCredentials(data: data) else { return .signedOut(Status.signInNotFound) }
         guard !parsed.isExpired(now: now) else { return .failed(Status.signInExpired) }
         cachedCredentials = parsed
         return .found(parsed)
@@ -184,7 +187,15 @@ actor ClaudeLimitsClient: LimitsSource {
         return max(0, date.timeIntervalSince(now))
     }
 
-    /// The last known rows (or none) marked as not live, with `status` explaining why.
+    /// No rows: a missing or rejected sign-in may mean another account, so neither the last live
+    /// reading nor the persisted samples are shown, and the last live reading is forgotten.
+    private func signedOut(_ status: String, now: Date) -> LimitSnapshot {
+        lastLive = nil
+        return LimitSnapshot(provider: .claude, rows: [], measuredAt: now, status: status, limitsLive: false)
+    }
+
+    /// The last known rows (or none) marked as not live, with `status` explaining why. Used for
+    /// transient failures (rate limits, network, server errors) with the same sign-in.
     private func degraded(_ status: String, now: Date) async -> LimitSnapshot {
         let known = if let lastLive { lastLive } else { await lastPersisted(now: now) }
         return LimitSnapshot(
