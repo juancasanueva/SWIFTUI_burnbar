@@ -218,21 +218,21 @@ private struct AboutNote: View {
     @Environment(\.cockpitPalette) private var palette
     @Environment(\.openURL) private var openURL
 
-    private static let repository = URL(string: "https://github.com/juancasanueva/SWIFTUI_burnbar")!
+    private static let repository = URL(string: "https://github.com/nixfred/burnbar")!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             SetupNote("Burnbar is a macOS port of Burn Bar, the Omarchy bar plugin by nixfred. MIT licence.")
             // A plain button, not `Link`: drawn in SwiftUI, so it also shows in rendered snapshots.
             Button { openURL(Self.repository) } label: {
-                Text("github.com/juancasanueva/SWIFTUI_burnbar")
+                Text("github.com/nixfred/burnbar")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(palette.secondary)
                     .underline()
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isLink)
-            .accessibilityHint("Opens the Burnbar repository in your browser")
+            .accessibilityHint("Opens nixfred's Burn Bar repository in your browser")
         }
     }
 }
