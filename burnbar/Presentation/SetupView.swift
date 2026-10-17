@@ -125,7 +125,7 @@ struct SetupView: View {
 
 // MARK: Groups
 
-/// "SETUP  everything Burn Bar can show, and how" with "Back to the cockpit" (Esc), refresh and
+/// "SETUP  everything Burnbar can show, and how" with "Back to the cockpit" (Esc), refresh and
 /// a quiet quit on the right.
 private struct SetupTitleRow: View {
     let isRefreshing: Bool
@@ -141,7 +141,7 @@ private struct SetupTitleRow: View {
                 .font(.system(size: 17, weight: .medium, design: .monospaced))
                 .tracking(1.2)
                 .accessibilityAddTraits(.isHeader)
-            Text("everything Burn Bar can show, and how")
+            Text("everything Burnbar can show, and how")
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(palette.secondary)
             Spacer(minLength: 8)
@@ -153,7 +153,7 @@ private struct SetupTitleRow: View {
             CockpitIconButton(systemImage: "arrow.clockwise",
                               label: isRefreshing ? "Refreshing limits" : "Refresh limits", action: onRefresh)
                 .disabled(isRefreshing)
-            CockpitIconButton(systemImage: "power", label: "Quit Burn Bar", isQuiet: true, action: onQuit)
+            CockpitIconButton(systemImage: "power", label: "Quit Burnbar", isQuiet: true, action: onQuit)
                 .keyboardShortcut("q")
         }
     }
@@ -214,21 +214,21 @@ private struct AboutNote: View {
     @Environment(\.cockpitPalette) private var palette
     @Environment(\.openURL) private var openURL
 
-    private static let repository = URL(string: "https://github.com/nixfred/burnbar")!
+    private static let repository = URL(string: "https://github.com/juancasanueva/SWIFTUI_burnbar")!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SetupNote("A macOS port of Burn Bar, the Omarchy bar plugin by nixfred. MIT licence.")
+            SetupNote("Burnbar is a macOS port of Burn Bar, the Omarchy bar plugin by nixfred. MIT licence.")
             // A plain button, not `Link`: drawn in SwiftUI, so it also shows in rendered snapshots.
             Button { openURL(Self.repository) } label: {
-                Text("github.com/nixfred/burnbar")
+                Text("github.com/juancasanueva/SWIFTUI_burnbar")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(palette.secondary)
                     .underline()
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isLink)
-            .accessibilityHint("Opens the Burn Bar repository in your browser")
+            .accessibilityHint("Opens the Burnbar repository in your browser")
         }
     }
 }

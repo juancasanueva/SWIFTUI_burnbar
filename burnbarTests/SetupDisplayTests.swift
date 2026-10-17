@@ -171,6 +171,6 @@ struct LaunchAtLoginControllerTests {
         let controller = LaunchAtLoginController(item: item, settings: s)
         controller.setEnabled(true)
         #expect(!s.launchAtLogin)
-        #expect(controller.message == "Allow Burn Bar in System Settings › General › Login Items.")
+        #expect(controller.message == "Allow Burnbar in System Settings › General › Login Items.")
     }
 }

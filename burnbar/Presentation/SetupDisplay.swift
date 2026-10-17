@@ -116,6 +116,6 @@ final class LaunchAtLoginController {
     private func apply(_ status: LoginItemStatus) {
         let isEnabled = status == .enabled
         if settings.launchAtLogin != isEnabled { settings.launchAtLogin = isEnabled }
-        message = status == .requiresApproval ? "Allow Burn Bar in System Settings › General › Login Items." : nil
+        message = status == .requiresApproval ? "Allow Burnbar in System Settings › General › Login Items." : nil
     }
 }

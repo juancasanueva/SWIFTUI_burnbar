@@ -241,7 +241,7 @@ struct CockpitHeaderView: View {
             CockpitIconButton(systemImage: "arrow.clockwise",
                               label: isRefreshing ? "Refreshing limits" : "Refresh limits", action: onRefresh)
                 .disabled(isRefreshing)
-            CockpitIconButton(systemImage: "power", label: "Quit Burn Bar", isQuiet: true, action: onQuit)
+            CockpitIconButton(systemImage: "power", label: "Quit Burnbar", isQuiet: true, action: onQuit)
                 .keyboardShortcut("q")
         }
         .padding(.vertical, 2)
