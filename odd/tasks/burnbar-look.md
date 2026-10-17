@@ -30,7 +30,7 @@ ask-on-risk. Forecast ~400-600 authored lines, 1 task.
 - [x] T2 Own branding: footer, Setup subtitle, quit labels, login hint, about link → Burnbar + github.com/juancasanueva/SWIFTUI_burnbar; nixfred credit kept. Route: inline. Commits 0a611c4, 0c31c68.
 - [x] T3 Quit button looked disabled (tertiary grey) → secondary grey. Route: inline. Reviewed (approved). Commit bbcfd1c.
 - [x] T5 Test that an in-memory live Claude reading wins over the persisted fallback. Route: delegated (with T6).
-- [ ] T6 Setup subscription caption colour from a typed state on SubscriptionRow, not the caption string. Route: delegated (writer trigger: 2+ files incl. tests).
+- [x] T6 Setup subscription caption colour from a typed state on SubscriptionRow, not the caption string. Route: delegated (writer trigger: 2+ files incl. tests).
 - [x] T4 Claude card loses its limits and burndown when the usage endpoint returns 429 right after launch (in-memory `lastLive` empty) → fall back to the latest persisted samples of the current window, marked stale. Route: delegated (writer trigger: Data + tests, preparation reading). Commit 6d1f15d. Native review approved over 0c31c68..6d1f15d; follow-ups (informational): mixed-age fallback rows share one measuredAt; SetupView caption colour keys off a string literal; Codex never reports limitsLive=false, so the new non-live recording guard does not affect it.
 
 ## Acceptance criteria
@@ -58,6 +58,11 @@ T4 (delegated writer, done):
 T5 (delegated writer, done):
 - `liveReadingThisLaunchWinsOverThePersistedSamples` in ClaudeLimitsClientTests: a 200 reading, then a 429 with a sample store holding different percentages (0.66 / 0.77), returns the live rows (0.42, 0.175, 0.03, 0.09) with the live `measuredAt`, not live, rate-limited status.
 - Pins existing behaviour, so it passed at once. Proof it can fail: temporarily flipping `degraded` to prefer `lastPersisted(now:)` over `lastLive` made only this test fail (** TEST FAILED **, failing test `liveReadingThisLaunchWinsOverThePersistedSamples()`); the client was restored byte for byte (`git diff burnbar/Data/ClaudeLimitsClient.swift` empty).
+- Verification: `xcodebuild … -only-testing:burnbarTests test`: ** TEST SUCCEEDED **.
+
+T6 (delegated writer, done):
+- `SubscriptionRow.Tone` (normal / alert / muted) and `tone` computed in `rows(cards:enabled:)` by `tone(card:isEnabled:)`, sharing `isSpent` with the caption. SetupView maps tone → lane colour / `palette.bad` / `palette.tertiary`, identical to the previous string comparison (turned off → tertiary, spent → bad, else lane, including "No plan reading").
+- RED: `captionToneAlertsOnASpentBudgetAndMutesATurnedOffSubscription` failed to compile (`value of type 'SubscriptionRow' has no member 'tone'`). GREEN: full suite passes.
 - Verification: `xcodebuild … -only-testing:burnbarTests test`: ** TEST SUCCEEDED **.
 
 ## Next step

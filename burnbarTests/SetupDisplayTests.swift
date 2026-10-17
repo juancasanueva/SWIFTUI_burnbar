@@ -62,6 +62,20 @@ struct SetupDisplayTests {
         #expect(rows.first { $0.provider == .claude }?.name == "Claude")
     }
 
+    @Test func captionToneAlertsOnASpentBudgetAndMutesATurnedOffSubscription() {
+        let spent = SubscriptionRow.rows(cards: [card([row(percent: 1, elapsed: 0.5)])], enabled: [.claude])
+        #expect(spent.first { $0.provider == .claude }?.tone == .alert)
+
+        let onPace = SubscriptionRow.rows(cards: [card([row(percent: 0.5, elapsed: 0.5)])], enabled: [.claude])
+        #expect(onPace.first { $0.provider == .claude }?.tone == .normal)
+
+        let unread = SubscriptionRow.rows(cards: [card([])], enabled: [.claude])
+        #expect(unread.first { $0.provider == .claude }?.tone == .normal)
+
+        let off = SubscriptionRow.rows(cards: [card([row(percent: 1, elapsed: 0.5)])], enabled: [])
+        #expect(off.first { $0.provider == .claude }?.tone == .muted)
+    }
+
     // MARK: Warnings
 
     @Test(arguments: [(0, "nothing dismissed"), (1, "1 dismissed"), (3, "3 dismissed")])

@@ -11,10 +11,20 @@ import Observation
 
 /// One subscription in SUBSCRIPTIONS: its name, what its card says right now, and its toggle.
 nonisolated struct SubscriptionRow: Hashable, Sendable, Identifiable {
+    /// How the caption reads: in the lane colour, as an alert, or muted.
+    enum Tone: Hashable, Sendable {
+        case normal
+        /// The budget is spent until it resets.
+        case alert
+        /// The subscription is turned off.
+        case muted
+    }
+
     let provider: Provider
     let name: String
     /// E.g. "Banked 51%", "On pace", "Spent until it resets", "Turned off".
     let caption: String
+    let tone: Tone
     let isEnabled: Bool
 
     var id: Provider { provider }
@@ -23,8 +33,10 @@ nonisolated struct SubscriptionRow: Hashable, Sendable, Identifiable {
     static func rows(cards: [ProviderCard], enabled: Set<Provider>) -> [SubscriptionRow] {
         Provider.allCases.map { provider in
             let isEnabled = enabled.contains(provider)
+            let card = cards.first { $0.provider == provider }
             return SubscriptionRow(provider: provider, name: provider.title,
-                                   caption: caption(card: cards.first { $0.provider == provider }, isEnabled: isEnabled),
+                                   caption: caption(card: card, isEnabled: isEnabled),
+                                   tone: tone(card: card, isEnabled: isEnabled),
                                    isEnabled: isEnabled)
         }
     }
@@ -33,10 +45,22 @@ nonisolated struct SubscriptionRow: Hashable, Sendable, Identifiable {
     static func caption(card: ProviderCard?, isEnabled: Bool) -> String {
         guard isEnabled else { return "Turned off" }
         guard let card else { return "No plan reading" }
-        if let spent = card.budget?.spent, spent >= AdviceEngine.weeklyFull { return "Spent until it resets" }
+        if isSpent(card) { return "Spent until it resets" }
         let title = card.statusLine.title
         guard let first = title.first else { return title }
         return first.uppercased() + title.dropFirst().lowercased()
+    }
+
+    /// Muted when turned off, an alert when the budget is spent, otherwise normal.
+    static func tone(card: ProviderCard?, isEnabled: Bool) -> Tone {
+        guard isEnabled else { return .muted }
+        guard let card else { return .normal }
+        return isSpent(card) ? .alert : .normal
+    }
+
+    private static func isSpent(_ card: ProviderCard) -> Bool {
+        guard let spent = card.budget?.spent else { return false }
+        return spent >= AdviceEngine.weeklyFull
     }
 }
 

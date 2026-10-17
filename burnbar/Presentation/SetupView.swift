@@ -179,8 +179,11 @@ private struct SubscriptionsGroup: View {
     }
 
     private func captionColor(_ row: SubscriptionRow) -> Color {
-        guard row.isEnabled else { return palette.tertiary }
-        return row.caption == "Spent until it resets" ? palette.bad : palette.lane(row.provider)
+        switch row.tone {
+        case .normal: palette.lane(row.provider)
+        case .alert: palette.bad
+        case .muted: palette.tertiary
+        }
     }
 }
 
