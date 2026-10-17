@@ -50,7 +50,7 @@ struct burnbarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PanelView(store: store, launchAtLogin: launchAtLogin)
+            PanelView(store: store, launchAtLogin: launchAtLogin, updater: updater)
         } label: {
             MenuBarLabel(store: store, clock: clock)
         }

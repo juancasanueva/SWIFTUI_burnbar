@@ -25,10 +25,12 @@ struct SetupControls {
     var showFiveHourWindows: Binding<Bool>
     /// Reads the setting; writing goes through the login item and may be reverted.
     var launchAtLogin: Binding<Bool>
+    /// Reads and writes the updater, which persists the preference.
+    var automaticUpdateChecks: Binding<Bool>
 }
 
 extension SetupControls {
-    init(settings: BurnbarSettings, launchAtLogin: LaunchAtLoginController) {
+    init(settings: BurnbarSettings, launchAtLogin: LaunchAtLoginController, updater: any AppUpdating) {
         @Bindable var settings = settings
         self.init(
             showAccountNames: $settings.showAccountNames,
@@ -43,7 +45,9 @@ extension SetupControls {
             headline: $settings.headline,
             glowWhen: $settings.glowWhen,
             showFiveHourWindows: $settings.showFiveHourWindows,
-            launchAtLogin: Binding(get: { settings.launchAtLogin }, set: { launchAtLogin.setEnabled($0) })
+            launchAtLogin: Binding(get: { settings.launchAtLogin }, set: { launchAtLogin.setEnabled($0) }),
+            automaticUpdateChecks: Binding(get: { updater.automaticallyChecksForUpdates },
+                                           set: { updater.automaticallyChecksForUpdates = $0 })
         )
     }
 }
@@ -56,10 +60,12 @@ struct SetupView: View {
     /// Why launch at login is not what was asked for; nil when all is well.
     let loginItemMessage: String?
     let controls: SetupControls
+    let updates: SetupUpdates
     let isRefreshing: Bool
     let onSetEnabled: (Provider, Bool) -> Void
     let onWarnMeAgain: () -> Void
     let onRefresh: () -> Void
+    let onCheckForUpdates: () -> Void
     let onDone: () -> Void
     let onQuit: () -> Void
 
@@ -118,7 +124,7 @@ struct SetupView: View {
                 }
             }
             .frame(width: Self.columnWidth, alignment: .leading)
-            StripGroup(controls: controls)
+            StripGroup(controls: controls, updates: updates, onCheckForUpdates: onCheckForUpdates)
                 .frame(width: Self.columnWidth, alignment: .leading)
         }
     }
@@ -190,6 +196,8 @@ private struct SubscriptionsGroup: View {
 
 private struct StripGroup: View {
     let controls: SetupControls
+    let updates: SetupUpdates
+    let onCheckForUpdates: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -209,8 +217,42 @@ private struct StripGroup: View {
             SetupGroup("Ask for plan figures every") {
                 CapsuleChoices(title: "Limits refresh", selection: controls.limitsRefreshInterval)
             }
+            UpdatesGroup(updates: updates, automaticChecks: controls.automaticUpdateChecks,
+                         onCheck: onCheckForUpdates)
             AboutNote()
         }
+    }
+}
+
+/// "Check for Updates…", the automatic-checks preference, then the version and when it last looked.
+private struct UpdatesGroup: View {
+    let updates: SetupUpdates
+    let automaticChecks: Binding<Bool>
+    let onCheck: () -> Void
+
+    var body: some View {
+        SetupGroup("Updates") {
+            CheckForUpdatesRow(isEnabled: updates.canCheck, action: onCheck)
+            CheckboxRow(title: "Automatic checks", caption: "off until you ask", isOn: automaticChecks)
+            SetupNote("\(updates.versionLine) · \(updates.lastChecked)")
+        }
+    }
+}
+
+/// "Check for Updates…" as a flat row; disabled while a check is already running.
+private struct CheckForUpdatesRow: View {
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            SetupRowLayout(glyph: "arrow.down.circle", title: "Check for Updates…", isActive: false)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.6)
+        .accessibilityLabel("Check for Updates")
+        .accessibilityHint("Looks for a newer Burnbar now")
     }
 }
 
@@ -467,7 +509,7 @@ extension SetupControls {
                       refreshInterval: .constant(.fiveSeconds), limitsRefreshInterval: .constant(.fiveMinutes),
                       emberMotion: .constant(true), suggestNextSub: .constant(true), theme: .constant(.dark),
                       headline: .constant(.tokens), glowWhen: .constant(.over), showFiveHourWindows: .constant(true),
-                      launchAtLogin: .constant(true))
+                      launchAtLogin: .constant(true), automaticUpdateChecks: .constant(false))
     }
 }
 
@@ -477,8 +519,10 @@ extension SetupView {
         SetupView(header: CockpitPreview.header,
                   subscriptions: SubscriptionRow.rows(cards: CockpitPreview.cards, enabled: Set(Provider.allCases)),
                   warningsCaption: SetupDisplay.warningsCaption(dismissedCount: 0), canWarnAgain: false,
-                  loginItemMessage: nil, controls: .preview, isRefreshing: false,
-                  onSetEnabled: { _, _ in }, onWarnMeAgain: {}, onRefresh: {}, onDone: {}, onQuit: {})
+                  loginItemMessage: nil, controls: .preview,
+                  updates: SetupUpdates(versionLine: "Burnbar 1.0 (1)", canCheck: true, lastChecked: "Never checked"),
+                  isRefreshing: false, onSetEnabled: { _, _ in }, onWarnMeAgain: {}, onRefresh: {},
+                  onCheckForUpdates: {}, onDone: {}, onQuit: {})
     }
 }
 

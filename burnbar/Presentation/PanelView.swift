@@ -16,6 +16,7 @@ enum CockpitScreen: Hashable {
 struct PanelView: View {
     let store: UsageStore
     let launchAtLogin: LaunchAtLoginController
+    let updater: any AppUpdating
 
     @State private var isRefreshing = false
     @State private var screen: CockpitScreen = .cockpit
@@ -50,11 +51,13 @@ struct PanelView: View {
                     warningsCaption: SetupDisplay.warningsCaption(dismissedCount: state.dismissedAdviceCount),
                     canWarnAgain: state.hasDismissedAdvice,
                     loginItemMessage: launchAtLogin.message,
-                    controls: SetupControls(settings: settings, launchAtLogin: launchAtLogin),
+                    controls: SetupControls(settings: settings, launchAtLogin: launchAtLogin, updater: updater),
+                    updates: SetupUpdates(updater: updater, bundleInfo: Bundle.main.infoDictionary ?? [:], now: .now),
                     isRefreshing: isRefreshing,
                     onSetEnabled: settings.setEnabled,
                     onWarnMeAgain: store.warnMeAgain,
                     onRefresh: refresh,
+                    onCheckForUpdates: updater.checkForUpdates,
                     onDone: { screen = .cockpit },
                     onQuit: quit
                 )
