@@ -2,9 +2,9 @@
 //  SetupView.swift
 //  burnbar
 //
-//  The setup screen: the cockpit's header (DONE instead of SETUP) over three columns of boxes
-//  (subscriptions, Claude limits and warnings; the strip; cards and about), then the footer.
-//  Presentational: plain values and bindings in, closures out.
+//  The setup screen: a SETUP title row ("Back to the cockpit" on the right) over three columns
+//  of uppercase group labels and flat rows (checkboxes, radios and capsule choices), then the
+//  footer. Presentational: plain values and bindings in, closures out.
 //
 
 import SwiftUI
@@ -63,13 +63,13 @@ struct SetupView: View {
     let onDone: () -> Void
     let onQuit: () -> Void
 
-    static let columnWidth: CGFloat = 290
-    static let width = 3 * columnWidth + 2 * CockpitView.spacing + 2 * CockpitView.padding
+    static let columnWidth: CGFloat = 320
+    static let columnSpacing: CGFloat = 24
+    static let width = 3 * columnWidth + 2 * columnSpacing + 2 * CockpitView.padding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: CockpitView.spacing) {
-            CockpitHeaderView(header: header, isSetupOpen: true, isRefreshing: isRefreshing,
-                              onToggleSetup: onDone, onRefresh: onRefresh, onQuit: onQuit)
+        VStack(alignment: .leading, spacing: 18) {
+            SetupTitleRow(isRefreshing: isRefreshing, onDone: onDone, onRefresh: onRefresh, onQuit: onQuit)
             columns
             CockpitFooter(updatedAt: header.updatedAt)
         }
@@ -78,37 +78,88 @@ struct SetupView: View {
         .cockpitChrome()
     }
 
+    static func capitalizedFirst(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
+
     /// The three columns on their own (also rendered directly by the render test).
     var columns: some View {
-        HStack(alignment: .top, spacing: CockpitView.spacing) {
-            VStack(spacing: CockpitView.spacing) {
-                SubscriptionsBox(subscriptions: subscriptions, showAccountNames: controls.showAccountNames,
-                                 onSetEnabled: onSetEnabled)
-                SetupBox("Claude limits", systemImage: "gauge.with.dots.needle.33percent") {
-                    SetupToggleRow(title: "Read plan usage",
-                                   caption: "Uses Claude Code's sign-in from the login keychain to ask api.anthropic.com for your plan usage, as /usage does. Never stored, never refreshed.",
-                                   isOn: controls.readClaudeLimits)
+        HStack(alignment: .top, spacing: Self.columnSpacing) {
+            VStack(alignment: .leading, spacing: 18) {
+                SubscriptionsGroup(subscriptions: subscriptions, showAccountNames: controls.showAccountNames,
+                                   onSetEnabled: onSetEnabled)
+                SetupGroup("Claude limits") {
+                    CheckboxRow(title: "Read plan usage", caption: "asks for /usage", isOn: controls.readClaudeLimits)
+                    SetupNote("Uses Claude Code's sign-in from the login keychain to ask api.anthropic.com for your plan usage, as /usage does. Never stored, never refreshed.")
                 }
-                SetupBox("Warnings", systemImage: "exclamationmark.triangle") {
+                SetupGroup("Warnings") {
                     WarnMeAgainRow(caption: warningsCaption, isEnabled: canWarnAgain, action: onWarnMeAgain)
                 }
+                SetupGroup("The panel") {
+                    CapsuleChoices(title: "Theme", selection: controls.theme)
+                    CheckboxRow(title: "Launch at login", caption: loginItemMessage ?? "with your Mac",
+                                isOn: controls.launchAtLogin, captionIsAlert: loginItemMessage != nil)
+                }
             }
-            .frame(width: Self.columnWidth)
-            StripBox(controls: controls)
-                .frame(width: Self.columnWidth)
-            VStack(spacing: CockpitView.spacing) {
-                CardsBox(controls: controls, loginItemMessage: loginItemMessage)
-                AboutBox()
+            .frame(width: Self.columnWidth, alignment: .leading)
+            VStack(alignment: .leading, spacing: 18) {
+                SetupGroup("Card headline") {
+                    RadioRows(title: "Card headline", selection: controls.headline, caption: \.setupCaption)
+                }
+                SetupGroup("Card glow · what lights a card up") {
+                    RadioRows(title: "Card glow", selection: controls.glowWhen, caption: \.setupCaption,
+                              name: { SetupView.capitalizedFirst($0.phrase) })
+                }
+                SetupGroup("Budget windows") {
+                    CheckboxRow(title: "5-hour session windows", caption: "always",
+                                isOn: controls.showFiveHourWindows)
+                }
             }
-            .frame(width: Self.columnWidth)
+            .frame(width: Self.columnWidth, alignment: .leading)
+            StripGroup(controls: controls)
+                .frame(width: Self.columnWidth, alignment: .leading)
         }
-        .fontDesign(.default)
     }
 }
 
-// MARK: Boxes
+// MARK: Groups
 
-private struct SubscriptionsBox: View {
+/// "SETUP  everything Burn Bar can show, and how" with "Back to the cockpit" (Esc), refresh and
+/// a quiet quit on the right.
+private struct SetupTitleRow: View {
+    let isRefreshing: Bool
+    let onDone: () -> Void
+    let onRefresh: () -> Void
+    let onQuit: () -> Void
+
+    @Environment(\.cockpitPalette) private var palette
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text("SETUP")
+                .font(.system(size: 17, weight: .medium, design: .monospaced))
+                .tracking(1.2)
+                .accessibilityAddTraits(.isHeader)
+            Text("everything Burn Bar can show, and how")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(palette.secondary)
+            Spacer(minLength: 8)
+            Button("Back to the cockpit", action: onDone)
+                .buttonStyle(.plain)
+                .font(.system(size: 13, design: .monospaced))
+                .keyboardShortcut(.cancelAction)
+                .accessibilityHint("Returns to the cockpit")
+            CockpitIconButton(systemImage: "arrow.clockwise",
+                              label: isRefreshing ? "Refreshing limits" : "Refresh limits", action: onRefresh)
+                .disabled(isRefreshing)
+            CockpitIconButton(systemImage: "power", label: "Quit Burn Bar", isQuiet: true, action: onQuit)
+                .keyboardShortcut("q")
+        }
+    }
+}
+
+private struct SubscriptionsGroup: View {
     let subscriptions: [SubscriptionRow]
     let showAccountNames: Binding<Bool>
     let onSetEnabled: (Provider, Bool) -> Void
@@ -116,208 +167,226 @@ private struct SubscriptionsBox: View {
     @Environment(\.cockpitPalette) private var palette
 
     var body: some View {
-        SetupBox("Subscriptions", systemImage: "flame") {
+        SetupGroup("Subscriptions · tick any") {
             ForEach(subscriptions) { row in
-                SetupToggleRow(title: row.name, caption: row.caption,
-                               isOn: Binding(get: { row.isEnabled }, set: { onSetEnabled(row.provider, $0) }),
-                               tint: palette.lane(row.provider), dot: palette.lane(row.provider))
+                CheckboxRow(title: row.name, caption: row.caption.lowercased(),
+                            isOn: Binding(get: { row.isEnabled }, set: { onSetEnabled(row.provider, $0) }),
+                            titleColor: palette.lane(row.provider), captionColor: captionColor(row))
             }
-            SetupToggleRow(title: "Account names",
-                           caption: "Each card names the login it reads. Turn off for a screen share.",
-                           isOn: showAccountNames)
+            CheckboxRow(title: "Account names", caption: "off to screen share", isOn: showAccountNames)
+            SetupNote("A ticked subscription gets a card in the cockpit and a lane on the bar. Unticked, it has neither.")
         }
+    }
+
+    private func captionColor(_ row: SubscriptionRow) -> Color {
+        guard row.isEnabled else { return palette.tertiary }
+        return row.caption == "Spent until it resets" ? palette.bad : palette.lane(row.provider)
     }
 }
 
-private struct StripBox: View {
+private struct StripGroup: View {
     let controls: SetupControls
 
     var body: some View {
-        SetupBox("Strip", systemImage: "chart.bar.fill") {
-            SetupPillRow(title: "Window", caption: "How far back the strip reaches.", selection: controls.stripWindow)
-            SetupPillRow(title: "Cells per lane", selection: controls.cellsPerLane)
-            SetupPillRow(title: "Refresh", caption: "Rescans the transcripts.", selection: controls.refreshInterval)
-            SetupPillRow(title: "Limits refresh", caption: "Asks the providers for fresh plan figures.",
-                         selection: controls.limitsRefreshInterval)
-            SetupToggleRow(title: "Ember motion",
-                           caption: "Cells flicker and glow, a lane flashes when new burn lands. Off with Reduce Motion.",
-                           isOn: controls.emberMotion)
-            SetupToggleRow(title: "Suggest the next sub",
-                           caption: "With nothing to warn about, the chip names the subscription to use next.",
-                           isOn: controls.suggestNextSub)
+        VStack(alignment: .leading, spacing: 18) {
+            SetupGroup("The strip on the bar") {
+                CheckboxRow(title: "Ember motion", caption: "live cells breathe", isOn: controls.emberMotion)
+                CheckboxRow(title: "Suggest a sub", caption: "when nothing is over", isOn: controls.suggestNextSub)
+            }
+            SetupGroup("History window") {
+                CapsuleChoices(title: "History window", selection: controls.stripWindow)
+            }
+            SetupGroup("Cells per lane") {
+                CapsuleChoices(title: "Cells per lane", selection: controls.cellsPerLane)
+            }
+            SetupGroup("Rescan transcripts every") {
+                CapsuleChoices(title: "Refresh", selection: controls.refreshInterval)
+            }
+            SetupGroup("Ask for plan figures every") {
+                CapsuleChoices(title: "Limits refresh", selection: controls.limitsRefreshInterval)
+            }
+            AboutNote()
         }
     }
 }
 
-private struct CardsBox: View {
-    let controls: SetupControls
-    let loginItemMessage: String?
-
-    var body: some View {
-        SetupBox("Cards", systemImage: "rectangle.split.2x1") {
-            SetupPillRow(title: "Theme", selection: controls.theme)
-            SetupPillRow(title: "Headline", caption: "What each card leads with.", selection: controls.headline)
-            SetupPillRow(title: "Glow when", caption: "A card lights up for one reason.", selection: controls.glowWhen)
-            SetupToggleRow(title: "5-hour session windows", caption: "Shown anyway when one is about to run out.",
-                           isOn: controls.showFiveHourWindows)
-            SetupToggleRow(title: "Launch at login", caption: loginItemMessage, isOn: controls.launchAtLogin,
-                           captionIsAlert: loginItemMessage != nil)
-        }
-    }
-}
-
-private struct AboutBox: View {
+private struct AboutNote: View {
     @Environment(\.cockpitPalette) private var palette
+    @Environment(\.openURL) private var openURL
 
     private static let repository = URL(string: "https://github.com/nixfred/burnbar")!
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Text("🔥 Burn Bar")
-                    .font(.system(size: 14, weight: .bold))
-                Text("MIT")
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(palette.track))
-                    .accessibilityLabel("MIT licence")
+        VStack(alignment: .leading, spacing: 4) {
+            SetupNote("A macOS port of Burn Bar, the Omarchy bar plugin by nixfred. MIT licence.")
+            // A plain button, not `Link`: drawn in SwiftUI, so it also shows in rendered snapshots.
+            Button { openURL(Self.repository) } label: {
+                Text("github.com/nixfred/burnbar")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(palette.secondary)
+                    .underline()
             }
-            .accessibilityElement(children: .combine)
-            Text("A macOS port of Burn Bar, the Omarchy bar plugin by nixfred.")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Link(destination: Self.repository) {
-                Label("github.com/nixfred/burnbar", systemImage: "arrow.up.right.square")
-                    .font(.system(size: 11))
-            }
-            .foregroundStyle(.blue)
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isLink)
             .accessibilityHint("Opens the Burn Bar repository in your browser")
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cockpitBox()
     }
 }
 
 // MARK: Building blocks
 
-/// A rounded box with an icon and an uppercase label over rows split by thin dividers.
-struct SetupBox<Content: View>: View {
+/// An uppercase, letter-spaced group label over its rows.
+struct SetupGroup<Content: View>: View {
     let title: String
-    let systemImage: String
     @ViewBuilder let content: Content
 
-    @Environment(\.cockpitPalette) private var palette
-
-    init(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) {
+    init(_ title: String, @ViewBuilder content: () -> Content) {
         self.title = title
-        self.systemImage = systemImage
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(palette.secondary)
-                    .accessibilityHidden(true)
-                SectionLabel(title)
-            }
-            .padding(.bottom, 4)
-            Group(subviews: content) { rows in
-                ForEach(rows) { row in
-                    if row.id != rows.first?.id {
-                        Rectangle().fill(palette.border).frame(height: 1)
-                    }
-                    row.padding(.vertical, 8)
-                }
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            SectionLabel(title)
+                .padding(.bottom, 2)
+            content
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cockpitBox()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
 }
 
-/// A title, an optional caption and a small switch on the right.
-struct SetupToggleRow: View {
+/// A flat row: a glyph, a title and a muted right-aligned caption. Filled when `isActive`.
+private struct SetupRowLayout: View {
+    let glyph: String
+    let title: String
+    var caption: String?
+    var isActive: Bool
+    var titleColor: Color?
+    var captionColor: Color?
+
+    @Environment(\.cockpitPalette) private var palette
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: glyph)
+                .font(.system(size: 12))
+                .foregroundStyle(isActive ? palette.primary : palette.tertiary)
+                .frame(width: 14)
+            Text(title)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(titleColor ?? palette.primary)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            if let caption {
+                Text(caption)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(captionColor ?? palette.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .truncationMode(.tail)
+                    .help(caption)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 34)
+        .background(RoundedRectangle(cornerRadius: 4).fill(isActive ? palette.row : Color.clear))
+        .contentShape(Rectangle())
+    }
+}
+
+/// A boolean as a checkbox row; a real `Toggle`, so VoiceOver reads it as a switch.
+struct CheckboxRow: View {
     let title: String
     var caption: String?
     let isOn: Binding<Bool>
-    var tint: Color = .blue
-    /// A lane-coloured dot before the title.
-    var dot: Color?
+    var titleColor: Color?
+    var captionColor: Color?
     var captionIsAlert = false
 
     @Environment(\.cockpitPalette) private var palette
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if let dot {
-                Circle().fill(dot).frame(width: 8, height: 8).padding(.top, 5)
-            }
-            SetupRowText(title: title, caption: caption, captionColor: captionIsAlert ? palette.bad : palette.secondary)
-                .accessibilityHidden(true)
-            Spacer(minLength: 8)
-            Toggle(title, isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .tint(tint)
-                .accessibilityLabel(title)
-                .accessibilityHint(caption ?? "")
-        }
+        Toggle(title, isOn: isOn)
+            .toggleStyle(CheckboxGlyphStyle(title: title, caption: caption, titleColor: titleColor,
+                                            captionColor: captionIsAlert ? palette.bad : captionColor))
+            .accessibilityLabel(title)
+            .accessibilityHint(caption ?? "")
     }
 }
 
-/// A title, a row of pills and an optional caption.
-struct SetupPillRow<Option: SetupOption>: View {
+private struct CheckboxGlyphStyle: ToggleStyle {
     let title: String
-    var caption: String?
+    let caption: String?
+    let titleColor: Color?
+    let captionColor: Color?
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            SetupRowLayout(glyph: configuration.isOn ? "checkmark.square.fill" : "square", title: title,
+                           caption: caption, isActive: configuration.isOn, titleColor: titleColor,
+                           captionColor: captionColor)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A single choice as one radio row per option, each with its own muted caption.
+struct RadioRows<Option: SetupOption>: View {
+    let title: String
     let selection: Binding<Option>
+    let caption: (Option) -> String?
+    let name: (Option) -> String
+
+    init(title: String, selection: Binding<Option>, caption: @escaping (Option) -> String?,
+         name: @escaping (Option) -> String = \.label) {
+        self.title = title
+        self.selection = selection
+        self.caption = caption
+        self.name = name
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .accessibilityHidden(true)
-            SegmentedPills(title: title, selection: selection)
-            if let caption {
-                SetupCaption(text: caption)
-                    .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(Option.allCases)) { option in
+                let isSelected = option == selection.wrappedValue
+                Button { selection.wrappedValue = option } label: {
+                    SetupRowLayout(glyph: isSelected ? "largecircle.fill.circle" : "circle", title: name(option),
+                                   caption: caption(option), isActive: isSelected)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(name(option))
+                .accessibilityHint(caption(option) ?? "")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
     }
 }
 
-/// One pill per option, equal widths; the selected one amber with dark text.
-struct SegmentedPills<Option: SetupOption>: View {
+/// Short choices as outlined capsules, equal widths; the selected one filled.
+struct CapsuleChoices<Option: SetupOption>: View {
     let title: String
     let selection: Binding<Option>
 
     @Environment(\.cockpitPalette) private var palette
 
-    static var selectedFill: Color { Color(hex: 0xFDB338) }
-    static var selectedText: Color { Color(hex: 0x1C1C1E) }
-
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             ForEach(Array(Option.allCases)) { option in
                 let isSelected = option == selection.wrappedValue
                 Button { selection.wrappedValue = option } label: {
                     Text(option.label)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(isSelected ? Self.selectedText : palette.primary)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular, design: .monospaced))
+                        .foregroundStyle(isSelected ? palette.primary : palette.secondary)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(isSelected ? Self.selectedFill : palette.track))
-                        .contentShape(RoundedRectangle(cornerRadius: 5))
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(isSelected ? palette.row.opacity(1) : Color.clear))
+                        .overlay(Capsule().strokeBorder(isSelected ? palette.secondary : palette.border, lineWidth: 1))
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(option.label)
@@ -329,61 +398,59 @@ struct SegmentedPills<Option: SetupOption>: View {
     }
 }
 
-/// "Warn me again" as a pill button, with how many warnings are dismissed.
+/// "Warn me again" as a flat row with a reset glyph, with how many warnings are dismissed.
 private struct WarnMeAgainRow: View {
     let caption: String
     let isEnabled: Bool
     let action: () -> Void
 
-    @Environment(\.cockpitPalette) private var palette
-
     var body: some View {
-        HStack(spacing: 10) {
-            Button(action: action) {
-                Text("Warn me again")
-                    .font(.system(size: 12, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(palette.track))
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .opacity(isEnabled ? 1 : 0.45)
-            .accessibilityValue(caption)
-            .accessibilityHint("Shows dismissed advice again")
-            SetupCaption(text: caption)
-                .accessibilityHidden(true)
+        Button(action: action) {
+            SetupRowLayout(glyph: "arrow.counterclockwise", title: "Warn me again", caption: caption, isActive: false)
         }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.6)
+        .accessibilityLabel("Warn me again")
+        .accessibilityValue(caption)
+        .accessibilityHint("Shows dismissed advice again")
     }
 }
 
-private struct SetupRowText: View {
-    let title: String
-    let caption: String?
-    let captionColor: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-            if let caption {
-                SetupCaption(text: caption, color: captionColor)
-            }
-        }
-    }
-}
-
-private struct SetupCaption: View {
+/// A muted explanatory paragraph under a group.
+private struct SetupNote: View {
     let text: String
-    var color: Color?
 
     @Environment(\.cockpitPalette) private var palette
+
+    init(_ text: String) { self.text = text }
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11))
-            .foregroundStyle(color ?? palette.secondary)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(palette.secondary)
             .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 2)
+    }
+}
+
+private extension HeadlineMode {
+    var setupCaption: String? {
+        switch self {
+        case .budget: "spent, and will it last"
+        case .tokens: "raw burn in the window"
+        }
+    }
+}
+
+private extension GlowWhen {
+    var setupCaption: String? {
+        switch self {
+        case .over: "faster than the plan"
+        case .burning: "burn in the last 5 min"
+        case .spent: "brighter as it fills"
+        case .never: nil
+        }
     }
 }
 

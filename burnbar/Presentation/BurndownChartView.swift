@@ -6,10 +6,10 @@
 import Charts
 import SwiftUI
 
-/// Used share over the window on a dark plot: the even-pace diagonal from 0% at the window
-/// start to 100% at the reset (dashed grey), actual samples (solid lane colour, a dot at now),
-/// the projection along the fitted rate (dashed lane colour) and a rule at now. VoiceOver reads
-/// the burndown's summary.
+/// "BURNDOWN · WEEKLY (7-DAY)" with an even-pace key, over the used share on a dark plot: the
+/// even-pace diagonal from 0% at the window start to 100% at the reset (dashed grey), actual
+/// samples (solid lane colour, a dot at now), the projection along the fitted rate (dashed lane
+/// colour), a rule at now and the reset in the corner. VoiceOver reads the burndown's summary.
 struct BurndownChartView: View {
     let burndown: Burndown
     let lane: Color
@@ -21,11 +21,25 @@ struct BurndownChartView: View {
     }
 
     private var title: String {
-        BudgetSummary.name(window: burndown.pace.row.windowDuration, label: burndown.label).uppercased()
-            + (burndown.isProjectedReset ? " · NEW WINDOW (ASSUMED)" : "")
+        "Burndown · \(burndown.label)" + (burndown.isProjectedReset ? " · new window (assumed)" : "")
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel(title)
+                Spacer(minLength: 6)
+                Text("-- even pace")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(palette.secondary)
+            }
+            chart
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(burndown.accessibilitySummary)
+    }
+
+    private var chart: some View {
         Chart {
             line(burndown.ideal, .ideal)
                 .foregroundStyle(palette.tertiary)
@@ -44,7 +58,7 @@ struct BurndownChartView: View {
                     .lineStyle(StrokeStyle(lineWidth: 1))
                 PointMark(x: .value("Time", now.t), y: .value("Used", now.percent * 100))
                     .foregroundStyle(lane)
-                    .symbolSize(30)
+                    .symbolSize(40)
             }
         }
         .chartXScale(domain: burndown.windowStart...burndown.resetsAt)
@@ -54,16 +68,14 @@ struct BurndownChartView: View {
         .chartPlotStyle { plot in
             plot.background(palette.plot)
         }
-        .overlay(alignment: .topLeading) {
-            Text(title)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(palette.secondary)
+        .overlay(alignment: .bottomTrailing) {
+            Text("reset \(burndown.resetsAt.formatted(.dateTime.weekday(.abbreviated))) \(burndown.resetsAt.formatted(.dateTime.hour().minute()))")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(palette.tertiary)
                 .padding(5)
         }
-        .frame(height: 88)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(burndown.accessibilitySummary)
+        .frame(height: 100)
+        .clipShape(RoundedRectangle(cornerRadius: 2))
     }
 
     /// A line series; `series` keeps the three lines from joining. Points are identified by

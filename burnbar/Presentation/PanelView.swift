@@ -100,14 +100,20 @@ struct CockpitView: View {
     let onQuit: () -> Void
 
     static let columnWidth: CGFloat = 400
-    static let spacing: CGFloat = 10
-    static let padding: CGFloat = 12
+    static let spacing: CGFloat = 12
+    static let padding: CGFloat = 16
     static let maxScrollHeight: CGFloat = 760
 
     /// Panel width for `columns` cards (at least one column, for the empty state).
     static func width(columns: Int) -> CGFloat {
         let n = CGFloat(max(columns, 1))
         return n * columnWidth + (n - 1) * spacing + 2 * padding
+    }
+
+    /// The footer's how-to-read line.
+    static func hint(glowWhen: GlowWhen) -> String {
+        let glow = glowWhen == .never ? "cards never glow (SETUP)" : "a card glows for: \(glowWhen.phrase) (SETUP)"
+        return "the dashed diagonal is an even spend: a line above it is over budget · click a headline to flip budget and tokens · \(glow)"
     }
 
     @State private var contentHeight: CGFloat = 0
@@ -124,7 +130,7 @@ struct CockpitView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
             .frame(height: contentHeight > 0 ? min(contentHeight, Self.maxScrollHeight) : nil)
-            CockpitFooter(updatedAt: header.updatedAt)
+            CockpitFooter(updatedAt: header.updatedAt, hint: Self.hint(glowWhen: glowWhen))
         }
         .padding(Self.padding)
         .frame(width: Self.width(columns: cards.count))
@@ -134,8 +140,8 @@ struct CockpitView: View {
     private var columns: some View {
         HStack(alignment: .top, spacing: Self.spacing) {
             if cards.isEmpty {
-                Text("No subscriptions enabled — turn one on in SETUP")
-                    .font(.system(size: 12))
+                Text("no subscriptions enabled · turn one on in SETUP")
+                    .font(.system(size: 11, design: .monospaced))
                     .padding(12)
                     .frame(width: Self.columnWidth, alignment: .leading)
                     .cockpitBox()
@@ -148,11 +154,12 @@ struct CockpitView: View {
             }
         }
         // Room for the glow, which the scroll view would otherwise clip.
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
     }
 }
 
-/// The advice as a full-width box tinted with the advised provider's lane; clicking dismisses it.
+/// The advice as one full-width bordered row tinted with the advised provider's lane:
+/// "▶ USE CODEX NEXT" in tracked caps, the details inline. Clicking dismisses it.
 struct AdviceBannerButton: View {
     let banner: AdviceBanner
     let action: () -> Void
@@ -161,23 +168,31 @@ struct AdviceBannerButton: View {
 
     var body: some View {
         let tint = banner.provider.map(palette.lane) ?? palette.bad
+        let shape = RoundedRectangle(cornerRadius: 3)
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(banner.title)
-                    .font(.system(size: 15, weight: .heavy))
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("▶")
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(tint)
+                Text(banner.title.uppercased())
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .tracking(1.2)
+                    .foregroundStyle(tint)
+                    .layoutPriority(1)
                 if let detail = banner.detail {
                     Text(detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.secondary)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(palette.primary.opacity(0.85))
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(tint.opacity(0.13)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tint.opacity(0.35), lineWidth: 1))
+            .background(shape.fill(tint.opacity(0.09)))
+            .overlay(shape.strokeBorder(tint.opacity(0.45), lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -187,7 +202,8 @@ struct AdviceBannerButton: View {
     }
 }
 
-/// Wordmark and trailing-window totals; SETUP (DONE while setup is open, Esc too), refresh and quit.
+/// A flame and the trailing-window total in orange, the tracked meta line beside it; SETUP
+/// (DONE while setup is open, Esc too), refresh and a quiet quit on the right.
 struct CockpitHeaderView: View {
     let header: CockpitHeader
     var isSetupOpen = false
@@ -199,17 +215,24 @@ struct CockpitHeaderView: View {
     @Environment(\.cockpitPalette) private var palette
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("BURN BAR")
-                    .font(.system(size: 14, weight: .heavy))
-                Text("\(header.tokensText) tokens · \(header.turns) turns · \(header.sessions) sessions · last \(header.windowLabel)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.secondary)
+        HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .center, spacing: 14) {
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 16))
+                        .accessibilityHidden(true)
+                    Text(header.tokensText)
+                        .font(.system(size: 24, weight: .medium, design: .monospaced))
+                }
+                Text("tokens burned · last \(header.windowLabel) · \(header.turns) turns · \(header.sessions) sessions".uppercased())
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .tracking(1.4)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .foregroundStyle(palette.accent)
             .accessibilityElement(children: .combine)
-            Spacer()
+            Spacer(minLength: 8)
             Button(isSetupOpen ? "DONE" : "SETUP", action: onToggleSetup)
                 .buttonStyle(CockpitTextButtonStyle())
                 .keyboardShortcut(isSetupOpen ? .cancelAction : KeyboardShortcut(","))
@@ -218,27 +241,37 @@ struct CockpitHeaderView: View {
             CockpitIconButton(systemImage: "arrow.clockwise",
                               label: isRefreshing ? "Refreshing limits" : "Refresh limits", action: onRefresh)
                 .disabled(isRefreshing)
-            CockpitIconButton(systemImage: "power", label: "Quit Burn Bar", action: onQuit)
+            CockpitIconButton(systemImage: "power", label: "Quit Burn Bar", isQuiet: true, action: onQuit)
                 .keyboardShortcut("q")
         }
+        .padding(.vertical, 2)
     }
 }
 
-/// Credits on the left, the last update on the right.
+/// Muted mono footer: the how-to-read hint and the last update, then the credits.
 struct CockpitFooter: View {
     let updatedAt: Date?
+    var hint: String?
 
     @Environment(\.cockpitPalette) private var palette
 
     var body: some View {
-        HStack {
-            Text("Burn Bar for macOS · a Mac port of Burn Bar by nixfred")
-            Spacer()
-            if let updatedAt {
-                Text("updated \(updatedAt.formatted(.dateTime.hour().minute()))")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                if let hint {
+                    Text(hint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if let updatedAt {
+                    Text("updated \(updatedAt.formatted(.dateTime.hour().minute()))")
+                        .fixedSize()
+                }
             }
+            Text("Burn Bar for macOS · a Mac port of Burn Bar by nixfred")
+                .foregroundStyle(palette.tertiary)
         }
-        .font(.system(size: 10))
+        .font(.system(size: 10, design: .monospaced))
         .foregroundStyle(palette.secondary)
     }
 }

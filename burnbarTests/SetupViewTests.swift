@@ -17,7 +17,7 @@ struct SetupViewTests {
         renderer.scale = 1
         let image = try #require(renderer.nsImage)
         #expect(image.size.width == SetupView.width)
-        #expect(SetupView.width == 3 * SetupView.columnWidth + 2 * CockpitView.spacing + 2 * CockpitView.padding)
+        #expect(SetupView.width == 3 * SetupView.columnWidth + 2 * SetupView.columnSpacing + 2 * CockpitView.padding)
         #expect(image.size.height > 400)
     }
 
