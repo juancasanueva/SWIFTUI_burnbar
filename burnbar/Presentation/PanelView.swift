@@ -268,7 +268,7 @@ struct CockpitFooter: View {
                         .fixedSize()
                 }
             }
-            Text("Burn Bar for macOS · a Mac port of Burn Bar by nixfred")
+            Text("Burnbar · github.com/juancasanueva/SWIFTUI_burnbar")
                 .foregroundStyle(palette.tertiary)
         }
         .font(.system(size: 10, design: .monospaced))
