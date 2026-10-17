@@ -29,7 +29,7 @@ ask-on-risk. Forecast ~400-600 authored lines, 1 task.
 - [x] T1 Burn Bar restyle of cockpit + setup. Route: delegated (writer trigger: 2+ non-trivial files).
 - [x] T2 Own branding: footer, Setup subtitle, quit labels, login hint, about link → Burnbar + github.com/juancasanueva/SWIFTUI_burnbar; nixfred credit kept. Route: inline. Commits 0a611c4, 0c31c68.
 - [x] T3 Quit button looked disabled (tertiary grey) → secondary grey. Route: inline. Reviewed (approved). Commit bbcfd1c.
-- [x] T4 Claude card loses its limits and burndown when the usage endpoint returns 429 right after launch (in-memory `lastLive` empty) → fall back to the latest persisted samples of the current window, marked stale. Route: delegated (writer trigger: Data + tests, preparation reading).
+- [x] T4 Claude card loses its limits and burndown when the usage endpoint returns 429 right after launch (in-memory `lastLive` empty) → fall back to the latest persisted samples of the current window, marked stale. Route: delegated (writer trigger: Data + tests, preparation reading). Commit 6d1f15d. Native review approved over 0c31c68..6d1f15d; follow-ups (informational): mixed-age fallback rows share one measuredAt; SetupView caption colour keys off a string literal; Codex never reports limitsLive=false, so the new non-live recording guard does not affect it.
 
 ## Acceptance criteria
 - Rendered cockpit and setup (opt-in render tests) read as Burn Bar, not Cinderbar.
