@@ -40,7 +40,7 @@ struct ProviderCardView: View {
             BurnSection(card: card, lane: lane, windowLabel: windowLabel, window: window)
             TokenMixSection(split: card.split, lane: lane)
             if !card.topModels.isEmpty {
-                ModelSection(models: card.topModels, lane: lane)
+                ModelSection(models: card.topModels, share: card.share(of:), lane: lane)
             }
             Text("\(card.turns) turns · \(card.sessions) sessions")
                 .font(.system(size: 10, design: .monospaced))
@@ -318,13 +318,13 @@ private struct TokenMixSection: View {
 /// The hottest models: name, a bar relative to the hottest, share and heat.
 private struct ModelSection: View {
     let models: [ModelUsage]
+    let share: (ModelUsage) -> Double
     let lane: Color
 
     @Environment(\.cockpitPalette) private var palette
 
     var body: some View {
         let hottest = max(models.map(\.split.heat).max() ?? 1, 1)
-        let total = max(models.map(\.split.heat).reduce(0, +), 1)
         VStack(alignment: .leading, spacing: 6) {
             SectionLabel("By model")
             ForEach(models, id: \.model) { model in
@@ -335,7 +335,7 @@ private struct ModelSection: View {
                         .truncationMode(.tail)
                         .frame(width: 140, alignment: .leading)
                     UsageBar(percent: Double(model.split.heat) / Double(hottest), color: lane, height: 3)
-                    Text(CockpitFormat.percent(Double(model.split.heat) / Double(total)))
+                    Text(CockpitFormat.percent(share(model)))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(palette.secondary)
                         .frame(width: 34, alignment: .trailing)
