@@ -162,6 +162,28 @@ struct ClaudeLimitsClientTests {
         #expect(await sut.limits(now: now.addingTimeInterval(600))?.limitsLive == true)
     }
 
+    enum TransientSignInFailure: CaseIterable, Sendable {
+        case expiredToken, unreadableKeychain
+    }
+
+    @Test(arguments: TransientSignInFailure.allCases)
+    func aTransientSignInFailureShowsThePersistedRows(failure: TransientSignInFailure) async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400))])
+        let (keychain, status) = switch failure {
+        case .expiredToken: (StubKeychain(expiresAt: now.addingTimeInterval(-1)), "Claude Code sign-in expired — run claude to refresh")
+        // errSecInteractionNotAllowed: the item exists but could not be read.
+        case .unreadableKeychain: (StubKeychain(.failure(.status(-25308))), "Claude Code sign-in could not be read from the Keychain")
+        }
+        let sut = ClaudeLimitsClient(keychain: keychain, transport: StubTransport([]), samples: samples)
+
+        // Same sign-in, just not usable right now: the last known reading stays.
+        let snapshot = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(snapshot.rows.map(\.label) == ["Weekly (7-day)"])
+        #expect(snapshot.limitsLive == false)
+        #expect(snapshot.status == status)
+    }
+
     @Test func aMissingSignInDropsThePersistedRows() async throws {
         let samples = StubSampleStore()
         samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400))])
