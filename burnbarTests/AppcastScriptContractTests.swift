@@ -199,6 +199,58 @@ struct AppcastScriptContractTests {
         )
     }
 
+    // MARK: - Fetching the live feed
+
+    /// The script's `# --- fetch` section, up to the next section marker.
+    static func fetchSection(of script: String) throws -> String {
+        let start = try #require(script.range(of: "# --- fetch"))
+        let rest = script[start.upperBound...]
+        let end = try #require(rest.range(of: "# --- tool"))
+        return String(rest[rest.startIndex..<end.lowerBound])
+    }
+
+    /// Only a 404 means "no feed yet".
+    ///
+    /// The merged feed replaces the live one wholesale, so a fetch failure read
+    /// as "first release" would publish a one-item feed and strand every
+    /// installed copy on a version it skipped. A DNS failure, a timeout, a 5xx or
+    /// any other non-200 must stop the run instead. That needs the status code
+    /// itself: `curl -f` folds a 404 and a 503 into the same exit status, and a
+    /// bare `if ! curl` folds a network failure into it too.
+    @Test("Only an HTTP 404 starts an empty channel")
+    func onlyA404StartsAnEmptyChannel() throws {
+        let fetch = try Self.fetchSection(of: try AppcastScriptSources.script())
+        let feedFetches = AppcastScriptSources.commandInvocations(of: "curl", in: fetch)
+            .filter { $0.contains("$FEED_URL") }
+
+        #expect(feedFetches.count == 1)
+        let invocation = try #require(feedFetches.first)
+        #expect(invocation.contains("-w '%{http_code}'"), "the fetch must read the status code")
+        let flagClusters = invocation.split(separator: " ")
+            .filter { $0.hasPrefix("-") && !$0.hasPrefix("--") }
+        #expect(!flagClusters.contains { $0.contains("f") }, "curl -f hides which failure it was")
+
+        #expect(!fetch.contains("if ! curl"))
+        #expect(fetch.contains("404)"))
+        #expect(fetch.contains("200)"))
+        #expect(fetch.contains("*)"))
+    }
+
+    /// Every fetch outcome other than a usable 200 or a 404 exits non-zero.
+    ///
+    /// Three refusals: curl itself failing (DNS, timeout, TLS), an unexpected
+    /// status code, and a 200 whose body is empty or is not a feed. Each must
+    /// leave the live feed untouched rather than start over.
+    @Test("Any other fetch outcome exits non-zero")
+    func anyOtherFetchOutcomeExitsNonZero() throws {
+        let fetch = try Self.fetchSection(of: try AppcastScriptSources.script())
+        let exits = fetch.components(separatedBy: "exit 1").count - 1
+
+        #expect(exits >= 3, "expected refusals for curl failure, unexpected status and an unusable 200")
+        #expect(fetch.contains("[ ! -s \"$WORK/current.xml\" ]"), "an empty 200 must be refused")
+        #expect(fetch.contains("</channel>"))
+    }
+
     /// A prerelease tag produces no feed item at all.
     ///
     /// The same literal guard the release workflow uses, restated in the script

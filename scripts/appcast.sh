@@ -67,27 +67,55 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # --- fetch -------------------------------------------------------------------
-# A 404 on the very first release is a designed state, not an error: there is no
-# feed yet, so an empty channel is the correct starting point. Every later run
-# merges into whatever is actually being served, which is what keeps items for
-# versions a user skipped from disappearing.
+# The merged feed replaces the live one wholesale, so what counts as "no feed
+# yet" decides whether history survives. Exactly one answer means that: an HTTP
+# 404, the designed state of the very first release, where an empty channel is
+# the correct starting point. Every later run merges into whatever is actually
+# being served, which is what keeps items for versions a user skipped from
+# disappearing.
+#
+# Everything else stops the run before anything is signed or written: curl
+# itself failing (DNS, timeout, TLS), any status other than 200 or 404, and a
+# 200 whose body is empty or is not a feed. Treating a transient failure as
+# "first release" would replace the live feed with a one-item feed. `curl -f`
+# is deliberately not used here: it folds a 404 and a 503 into one exit status.
 echo "==> fetch $FEED_URL"
-if ! curl -fsSL "$FEED_URL" -o "$WORK/current.xml"; then
-	echo "    no live feed yet; starting an empty channel"
-	: > "$WORK/current.xml"
-fi
-if [ ! -s "$WORK/current.xml" ]; then
-	cat > "$WORK/current.xml" <<-XML
-		<?xml version="1.0" encoding="UTF-8"?>
-		<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-		    <channel>
-		        <title>Burnbar</title>
-		        <description>Updates for Burnbar</description>
-		        <language>en</language>
-		    </channel>
-		</rss>
-	XML
-fi
+FEED_STATUS="$(curl -sSL -w '%{http_code}' -o "$WORK/current.xml" "$FEED_URL")" || {
+    echo "could not fetch $FEED_URL (curl exit $?); refusing to replace the live feed" >&2
+    exit 1
+}
+case "$FEED_STATUS" in
+    200)
+        if [ ! -s "$WORK/current.xml" ]; then
+            echo "$FEED_URL answered 200 with an empty body; refusing to replace the live feed" >&2
+            exit 1
+        fi
+        case "$(< "$WORK/current.xml")" in
+            *'</channel>'*) ;;
+            *)
+                echo "$FEED_URL answered 200 without a </channel>; refusing to replace the live feed" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    404)
+        echo "    no live feed yet (HTTP 404); starting an empty channel"
+		cat > "$WORK/current.xml" <<-XML
+			<?xml version="1.0" encoding="UTF-8"?>
+			<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+				<channel>
+					<title>Burnbar</title>
+					<description>Updates for Burnbar</description>
+					<language>en</language>
+				</channel>
+			</rss>
+		XML
+        ;;
+    *)
+        echo "$FEED_URL answered HTTP $FEED_STATUS; refusing to replace the live feed" >&2
+        exit 1
+        ;;
+esac
 
 # --- tool --------------------------------------------------------------------
 echo "==> tool Sparkle $SPARKLE_VERSION"

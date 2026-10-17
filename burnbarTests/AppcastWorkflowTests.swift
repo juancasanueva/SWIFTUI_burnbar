@@ -256,9 +256,10 @@ struct AppcastWorkflowTests {
     /// The guard reaches the API with `curl`, and with nothing that could touch a
     /// release.
     ///
-    /// The workflow's blast radius is pinned elsewhere at exactly one `gh`
-    /// invocation — `gh release create` — and no `git` invocation. Reading the
-    /// deployments API through `gh` here would quietly widen it.
+    /// The workflow's blast radius is pinned at exactly one `gh` invocation —
+    /// `gh release create` — and no `git` invocation, by
+    /// `theWorkflowInvokesGhOnceAndGitNever`. Reading the deployments API through
+    /// `gh` here would quietly widen it.
     @Test("The guard reaches the API with curl and not gh")
     func theGuardReachesTheAPIWithCurlAndNotGh() throws {
         let steps = AppcastWorkflowSources.steps(in: try AppcastWorkflowSources.workflow())
@@ -284,6 +285,52 @@ struct AppcastWorkflowTests {
 
         #expect(upload < deploy)
         #expect(deploy < cleanup)
+    }
+
+    // MARK: - Blast radius
+
+    /// The workflow can only ever *create* a release.
+    ///
+    /// Exactly one `gh` invocation, and it is `gh release create`; no `git`
+    /// invocation at all. Comment lines are skipped, because the workflow
+    /// explains in prose what it never does.
+    @Test("The workflow invokes gh once, to create the release, and git never")
+    func theWorkflowInvokesGhOnceAndGitNever() throws {
+        let code = try AppcastWorkflowSources.workflow()
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
+
+        let gh = code.filter { AppcastWorkflowSources.invokes("gh", in: $0) }
+        let git = code.filter { AppcastWorkflowSources.invokes("git", in: $0) }
+
+        #expect(gh.count == 1)
+        #expect(gh.first?.contains("gh release create") == true)
+        #expect(git == [])
+        // The reader is only meaningful if it can find an invocation at all.
+        #expect(code.contains { AppcastWorkflowSources.invokes("curl", in: $0) })
+    }
+
+    // MARK: - Supply chain
+
+    /// Every action is pinned to a full commit SHA, with its tag as a comment.
+    ///
+    /// A tag is mutable: whoever controls the action's repository can move it,
+    /// and this job holds the signing certificate, the notarization key and the
+    /// Sparkle private key. A forty-hex commit is the only reference that cannot
+    /// be repointed.
+    @Test("Every action is pinned to a 40-hex commit SHA")
+    func everyActionIsPinnedToACommitSHA() throws {
+        let uses = try AppcastWorkflowSources.workflow()
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("uses:") || $0.hasPrefix("- uses:") }
+        let pinned = "uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40} # v[0-9]+(\\.[0-9]+)*$"
+
+        #expect(uses.count == 4)
+        for line in uses {
+            #expect(line.range(of: pinned, options: .regularExpression) != nil, "not pinned to a SHA: \(line)")
+        }
     }
 }
 
