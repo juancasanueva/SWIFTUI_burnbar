@@ -74,11 +74,15 @@ nonisolated struct LimitSample: Codable, Hashable, Sendable {
     /// The reset the row reported when sampled, identifying its window; nil for samples
     /// recorded before it was kept (decoded leniently).
     let resetsAt: Date?
+    /// Opaque key of the account the reading came from (a hash, never the raw identity); nil
+    /// when unknown or for samples recorded before it was kept (decoded leniently).
+    let account: String?
 
-    init(t: Date, percent: Double, resetsAt: Date? = nil) {
+    init(t: Date, percent: Double, resetsAt: Date? = nil, account: String? = nil) {
         self.t = t
         self.percent = percent
         self.resetsAt = resetsAt
+        self.account = account
     }
 
     /// How far a reported reset may jitter between readings of the same window.
@@ -125,13 +129,18 @@ nonisolated struct LimitSnapshot: Hashable, Sendable {
     let status: String?
     /// False when the rows are the last known values (or none) because the latest refresh failed.
     let limitsLive: Bool
+    /// Opaque key of the account the rows were read from (see `LimitSample.account`); nil when
+    /// unknown or not tracked.
+    let account: String?
 
-    init(provider: Provider, rows: [LimitRow], measuredAt: Date, status: String? = nil, limitsLive: Bool = true) {
+    init(provider: Provider, rows: [LimitRow], measuredAt: Date, status: String? = nil, limitsLive: Bool = true,
+         account: String? = nil) {
         self.provider = provider
         self.rows = rows
         self.measuredAt = measuredAt
         self.status = status
         self.limitsLive = limitsLive
+        self.account = account
     }
 }
 

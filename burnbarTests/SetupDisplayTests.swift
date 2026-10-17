@@ -62,11 +62,30 @@ struct SetupDisplayTests {
         #expect(rows.first { $0.provider == .claude }?.name == "Claude")
     }
 
+    @Test func captionToneAlertsOnASpentBudgetAndMutesATurnedOffSubscription() {
+        let spent = SubscriptionRow.rows(cards: [card([row(percent: 1, elapsed: 0.5)])], enabled: [.claude])
+        #expect(spent.first { $0.provider == .claude }?.tone == .alert)
+
+        let onPace = SubscriptionRow.rows(cards: [card([row(percent: 0.5, elapsed: 0.5)])], enabled: [.claude])
+        #expect(onPace.first { $0.provider == .claude }?.tone == .normal)
+
+        let unread = SubscriptionRow.rows(cards: [card([])], enabled: [.claude])
+        #expect(unread.first { $0.provider == .claude }?.tone == .normal)
+
+        let off = SubscriptionRow.rows(cards: [card([row(percent: 1, elapsed: 0.5)])], enabled: [])
+        #expect(off.first { $0.provider == .claude }?.tone == .muted)
+    }
+
     // MARK: Warnings
 
     @Test(arguments: [(0, "nothing dismissed"), (1, "1 dismissed"), (3, "3 dismissed")])
     func warningsCaptionCountsDismissals(count: Int, expected: String) {
         #expect(SetupDisplay.warningsCaption(dismissedCount: count) == expected)
+    }
+
+    @Test func fiveHourCaptionSaysWhenAnUntickedWindowStillShows() {
+        #expect(SetupDisplay.fiveHourCaption(isOn: true) == "always")
+        #expect(SetupDisplay.fiveHourCaption(isOn: false) == "only near the limit")
     }
 
     // MARK: Option labels
@@ -171,6 +190,6 @@ struct LaunchAtLoginControllerTests {
         let controller = LaunchAtLoginController(item: item, settings: s)
         controller.setEnabled(true)
         #expect(!s.launchAtLogin)
-        #expect(controller.message == "Allow Burn Bar in System Settings › General › Login Items.")
+        #expect(controller.message == "Allow Burnbar in System Settings › General › Login Items.")
     }
 }

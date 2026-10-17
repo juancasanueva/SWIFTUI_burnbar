@@ -44,6 +44,33 @@ final class AccountReaderTests {
         #expect(account.label == "ada@example.com")
     }
 
+    @Test func claudeAccountKeyIsAStableHashOfTheAccountAndOrganization() throws {
+        try write(#"{"oauthAccount":{"accountUuid":"u-1","organizationUuid":"o-1","emailAddress":"ada@example.com"}}"#, to: ".claude.json")
+        let key = try #require(reader.claudeAccountKey())
+        #expect(reader.claudeAccountKey() == key)
+        #expect(key.count == 32)
+        #expect(!key.contains("ada") && !key.contains("u-1"))
+
+        try write(#"{"oauthAccount":{"accountUuid":"u-2","organizationUuid":"o-1","emailAddress":"ada@example.com"}}"#, to: ".claude.json")
+        #expect(reader.claudeAccountKey() != key)
+        try write(#"{"oauthAccount":{"accountUuid":"u-1","organizationUuid":"o-2","emailAddress":"ada@example.com"}}"#, to: ".claude.json")
+        #expect(reader.claudeAccountKey() != key)
+    }
+
+    @Test func claudeAccountKeyFallsBackToTheEmailAndIsNilWithoutEither() throws {
+        try write(#"{"oauthAccount":{"emailAddress":"ada@example.com"}}"#, to: ".claude.json")
+        let byEmail = try #require(reader.claudeAccountKey())
+        try write(#"{"oauthAccount":{"emailAddress":"ADA@example.com"}}"#, to: ".claude.json")
+        #expect(reader.claudeAccountKey() == byEmail)
+        try write(#"{"oauthAccount":{"emailAddress":"grace@example.com"}}"#, to: ".claude.json")
+        #expect(reader.claudeAccountKey() != byEmail)
+
+        try write(#"{"oauthAccount":{"accountUuid":"","emailAddress":"","displayName":"Ada"}}"#, to: ".claude.json")
+        #expect(reader.claudeAccountKey() == nil)
+        try write("not json", to: ".claude.json")
+        #expect(reader.claudeAccountKey() == nil)
+    }
+
     @Test func claudeAccountIsNilWhenMissingOrEmpty() throws {
         #expect(reader.claude() == nil)
         try write(#"{"numStartups":3}"#, to: ".claude.json")

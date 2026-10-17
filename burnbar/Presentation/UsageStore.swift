@@ -16,7 +16,8 @@ import Observation
 /// Keychain prompt, a hung request) therefore never freezes the heat lanes. Limits are also
 /// fetched by `refreshLimits(force: true)` (panel open); a force issued while a fetch is in
 /// flight runs once more after it. Each limit snapshot is recorded in the sample store so pace
-/// can fit a burn rate. Failures never throw: they arrive as `LimitSnapshot.status` and show as
+/// can fit a burn rate; pace and the burndown use only samples of the snapshot's account.
+/// Failures never throw: they arrive as `LimitSnapshot.status` and show as
 /// status text. An inert store (`isInert`) ignores every loop and refresh.
 @Observable
 final class UsageStore {
@@ -88,11 +89,13 @@ final class UsageStore {
     static func live(settings: BurnbarSettings) -> UsageStore {
         let window = StripWindow.longest.duration
         let codex = CodexRolloutCollector(window: window)
+        let samples = LimitSampleStore()
+        let accounts = AccountReader()
         return UsageStore(
             collectors: [.claude: ClaudeTranscriptCollector(window: window), .codex: codex],
-            limits: [.claude: ClaudeLimitsClient(), .codex: codex],
-            samples: LimitSampleStore(),
-            accounts: AccountReader(),
+            limits: [.claude: ClaudeLimitsClient(samples: samples, account: accounts), .codex: codex],
+            samples: samples,
+            accounts: accounts,
             settings: settings
         )
     }
@@ -268,10 +271,15 @@ final class UsageStore {
             guard let source = limitSources[provider],
                   let snapshot = await source.limits(now: now, force: force) else { continue }
             snapshots[provider] = snapshot
-            await sampleStore.record(snapshot)
+            // Last known values were recorded when they were live; re-recording could add samples
+            // at a time a row was not actually read.
+            if snapshot.limitsLive { await sampleStore.record(snapshot) }
             var rows: [String: [LimitSample]] = [:]
             for row in snapshot.rows {
+                // Only this snapshot's account: another account's readings (or legacy ones without an
+                // account, when it has one) would bend the pace and the burndown.
                 rows[row.label] = await sampleStore.samples(provider: provider, label: row.label)
+                    .filter { $0.account == snapshot.account }
             }
             samples[provider] = rows
         }

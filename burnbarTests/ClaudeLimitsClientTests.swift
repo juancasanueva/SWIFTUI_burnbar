@@ -11,6 +11,8 @@ import Testing
 struct ClaudeLimitsClientTests {
     private let resetText = "2026-10-16T15:00:00.123456+00:00"
     private let reset = Date(timeIntervalSince1970: 1_792_162_800.123)
+    private let accountA = "account-a-key"
+    private let accountB = "account-b-key"
 
     private func client(_ transport: StubTransport, keychain: StubKeychain = StubKeychain()) -> ClaudeLimitsClient {
         ClaudeLimitsClient(keychain: keychain, transport: transport)
@@ -135,16 +137,62 @@ struct ClaudeLimitsClientTests {
     }
 
     @Test(arguments: [401, 403])
-    func rejectedTokenAsksToSignInAgainAndKeepsTheLastRows(code: Int) async throws {
+    func rejectedTokenAsksToSignInAgainAndDropsTheLastRows(code: Int) async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400), account: accountA)])
         let transport = StubTransport([.status(200, fullBody), .status(code, #"{"error":"x"}"#)])
-        let sut = client(transport)
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples, account: StubAccountKey(accountA))
         _ = await sut.limits(now: now)
 
+        // The rows may belong to another account: neither the live nor the persisted ones are shown.
         let snapshot = try #require(await sut.limits(now: now.addingTimeInterval(300)))
         #expect(snapshot.status == "Claude Code sign-in was rejected — run claude to sign in again")
         #expect(snapshot.limitsLive == false)
-        #expect(snapshot.rows.count == 4)
-        #expect(snapshot.measuredAt == now)
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.measuredAt == now.addingTimeInterval(300))
+    }
+
+    @Test func persistedRowsStayHiddenAfterASignOutUntilALiveReading() async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400), account: accountA)])
+        let transport = StubTransport([.status(401, "{}"), .failure(.timedOut), .status(200, fullBody)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples, account: StubAccountKey(accountA))
+        _ = await sut.limits(now: now)
+
+        let unreachable = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(unreachable.rows.isEmpty)
+        #expect(await sut.limits(now: now.addingTimeInterval(600))?.limitsLive == true)
+    }
+
+    enum TransientSignInFailure: CaseIterable, Sendable {
+        case expiredToken, unreadableKeychain
+    }
+
+    @Test(arguments: TransientSignInFailure.allCases)
+    func aTransientSignInFailureShowsThePersistedRows(failure: TransientSignInFailure) async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400), account: accountA)])
+        let (keychain, status) = switch failure {
+        case .expiredToken: (StubKeychain(expiresAt: now.addingTimeInterval(-1)), "Claude Code sign-in expired — run claude to refresh")
+        // errSecInteractionNotAllowed: the item exists but could not be read.
+        case .unreadableKeychain: (StubKeychain(.failure(.status(-25308))), "Claude Code sign-in could not be read from the Keychain")
+        }
+        let sut = ClaudeLimitsClient(keychain: keychain, transport: StubTransport([]), samples: samples, account: StubAccountKey(accountA))
+
+        // Same sign-in, just not usable right now: the last known reading stays.
+        let snapshot = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(snapshot.rows.map(\.label) == ["Weekly (7-day)"])
+        #expect(snapshot.limitsLive == false)
+        #expect(snapshot.status == status)
+    }
+
+    @Test func aMissingSignInDropsThePersistedRows() async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now, percent: 0.14, resetsAt: now.addingTimeInterval(86_400), account: accountA)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(.success(nil)), transport: StubTransport([]), samples: samples, account: StubAccountKey(accountA))
+        let snapshot = try #require(await sut.limits(now: now))
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.status == "Claude Code sign-in not found — run claude to sign in")
     }
 
     @Test func rateLimitKeepsTheLastSnapshotAndBacksOffUpToThirtyMinutes() async throws {
@@ -173,6 +221,138 @@ struct ClaudeLimitsClientTests {
         let count = await transport.requests.count
         _ = await sut.limits(now: at.addingTimeInterval(1800 + 300))
         #expect(await transport.requests.count == count + 1)
+    }
+
+    @Test func rateLimitBeforeAnyLiveReadingShowsTheLastPersistedSamples() async throws {
+        let weeklyReset = now.addingTimeInterval(3 * 86_400)
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [
+            LimitSample(t: now.addingTimeInterval(-1200), percent: 0.12, resetsAt: weeklyReset, account: accountA),
+            LimitSample(t: now.addingTimeInterval(-600), percent: 0.14, resetsAt: weeklyReset, account: accountA),
+        ])
+        // A window that has reset since, and one without a known reset, are not shown.
+        samples.seed(.claude, label: "Session (5-hour)", [LimitSample(t: now.addingTimeInterval(-7200), percent: 0.5, resetsAt: now.addingTimeInterval(-60), account: accountA)])
+        samples.seed(.claude, label: "Weekly Opus (7-day)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.02, account: accountA)])
+        samples.seed(.codex, label: "Weekly (7-day)", [LimitSample(t: now.addingTimeInterval(-60), percent: 0.9, resetsAt: weeklyReset)])
+        let transport = StubTransport([.status(429, "{}"), .status(200, fullBody)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples, account: StubAccountKey(accountA))
+
+        let limited = try #require(await sut.limits(now: now))
+        #expect(limited.rows == [LimitRow(label: "Weekly (7-day)", percent: 0.14, resetsAt: weeklyReset, windowDuration: 10080 * minute)])
+        #expect(limited.measuredAt == now.addingTimeInterval(-600))
+        #expect(limited.limitsLive == false)
+        #expect(limited.status?.hasPrefix("Claude limits rate-limited") == true)
+
+        // Once the backoff passes, the live reading wins.
+        let live = try #require(await sut.limits(now: now.addingTimeInterval(601)))
+        #expect(live.limitsLive)
+        #expect(live.rows.count == 4)
+    }
+
+    @Test func persistedRowsOfDifferentAgesAreMeasuredAtTheOldest() async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.14, resetsAt: now.addingTimeInterval(3 * 86_400), account: accountA)])
+        samples.seed(.claude, label: "Session (5-hour)", [LimitSample(t: now.addingTimeInterval(-3600), percent: 0.3, resetsAt: now.addingTimeInterval(3600), account: accountA)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]), samples: samples, account: StubAccountKey(accountA))
+
+        let limited = try #require(await sut.limits(now: now))
+        #expect(limited.rows.count == 2)
+        // No row is shown as fresher than its own last reading.
+        #expect(limited.measuredAt == now.addingTimeInterval(-3600))
+    }
+
+    @Test func liveReadingThisLaunchWinsOverThePersistedSamples() async throws {
+        let weeklyReset = now.addingTimeInterval(3 * 86_400)
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.66, resetsAt: weeklyReset, account: accountA)])
+        samples.seed(.claude, label: "Session (5-hour)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.77, resetsAt: weeklyReset, account: accountA)])
+        let transport = StubTransport([.status(200, fullBody), .status(429, "{}")])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples, account: StubAccountKey(accountA))
+        let live = try #require(await sut.limits(now: now))
+
+        let limited = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(limited.rows == live.rows)
+        #expect(limited.rows.map(\.percent) == [0.42, 0.175, 0.03, 0.09])
+        #expect(limited.measuredAt == now)
+        #expect(limited.limitsLive == false)
+        #expect(limited.status?.hasPrefix("Claude limits rate-limited") == true)
+    }
+
+    // MARK: Account-scoped persisted samples
+
+    /// A weekly sample from `account` (nil: a legacy sample recorded before accounts were kept).
+    private func weeklySamples(account: String?) -> StubSampleStore {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [
+            LimitSample(t: now.addingTimeInterval(-600), percent: 0.14, resetsAt: now.addingTimeInterval(3 * 86_400), account: account),
+        ])
+        return samples
+    }
+
+    @Test func anotherAccountsSamplesAreNotShownOnATransientFailure() async throws {
+        // The user switched accounts between launches and the first request is rate-limited.
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]),
+                                     samples: weeklySamples(account: accountB), account: StubAccountKey(accountA))
+        let limited = try #require(await sut.limits(now: now))
+        #expect(limited.rows.isEmpty)
+        #expect(limited.limitsLive == false)
+        #expect(limited.status?.hasPrefix("Claude limits rate-limited") == true)
+    }
+
+    @Test func theSameAccountsSamplesAreShownOnATransientFailure() async throws {
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.failure(.timedOut)]),
+                                     samples: weeklySamples(account: accountA), account: StubAccountKey(accountA))
+        let snapshot = try #require(await sut.limits(now: now))
+        #expect(snapshot.rows.map(\.percent) == [0.14])
+        #expect(snapshot.account == accountA)
+    }
+
+    @Test func legacySamplesWithoutAnAccountAreIgnored() async throws {
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]),
+                                     samples: weeklySamples(account: nil), account: StubAccountKey(accountA))
+        #expect(try #require(await sut.limits(now: now)).rows.isEmpty)
+    }
+
+    @Test func withoutAKnownAccountNoPersistedSamplesAreShown() async throws {
+        // Unknown identity: the samples may be anyone's, so none are trusted.
+        let unknown = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]),
+                                         samples: weeklySamples(account: nil), account: StubAccountKey(nil))
+        #expect(try #require(await unknown.limits(now: now)).rows.isEmpty)
+        let unidentified = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]),
+                                              samples: weeklySamples(account: accountA))
+        #expect(try #require(await unidentified.limits(now: now)).rows.isEmpty)
+    }
+
+    @Test func aLiveReadingCarriesTheAccountItWasReadFor() async throws {
+        let identity = StubAccountKey(accountA)
+        let transport = StubTransport([.status(200, fullBody), .status(200, fullBody)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, account: identity)
+        #expect(try #require(await sut.limits(now: now)).account == accountA)
+
+        // The cached token still belongs to the account it was read with.
+        identity.set(accountB)
+        #expect(try #require(await sut.limits(now: now.addingTimeInterval(300))).account == accountA)
+    }
+
+    @Test func theLastLiveReadingOfAnotherAccountIsNotShown() async throws {
+        let identity = StubAccountKey(accountA)
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(expiresAt: now.addingTimeInterval(200)),
+                                     transport: StubTransport([.status(200, fullBody)]), account: identity)
+        _ = await sut.limits(now: now)
+
+        // The token has expired and Claude Code now reports another account.
+        identity.set(accountB)
+        let snapshot = try #require(await sut.limits(now: now.addingTimeInterval(300)))
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.limitsLive == false)
+    }
+
+    @Test func failureWithoutLiveReadingOrSamplesHasNoRows() async throws {
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]), samples: StubSampleStore(), account: StubAccountKey(accountA))
+        let snapshot = try #require(await sut.limits(now: now))
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.measuredAt == now)
+        #expect(snapshot.limitsLive == false)
     }
 
     @Test func networkErrorKeepsTheLastSnapshotWithAStatus() async throws {

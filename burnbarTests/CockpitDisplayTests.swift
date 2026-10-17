@@ -31,6 +31,20 @@ struct CockpitDisplayTests {
         return ProviderCard(state: state, now: now)
     }
 
+    // MARK: By model
+
+    @Test func modelShareIsOfAllTheCardTokensNotJustTheShownModels() {
+        let models = [400, 300, 200, 100].enumerated().map { index, heat in
+            ModelUsage(model: "m\(index)", split: TokenSplit(input: heat, cacheWrite: 0, output: 0, cacheRead: 0))
+        }
+        let lane = LaneUsage(provider: .claude, buckets: [], heat: 1000, split: .zero, byModel: models,
+                             turns: 1, sessions: 1, rate5m: 0, rate60m: 0)
+        let c = card([], lane: lane)
+        #expect(c.topModels.count == 3)
+        #expect(c.share(of: c.topModels[0]) == 0.4)
+        #expect(c.share(of: c.topModels[2]) == 0.2)
+    }
+
     // MARK: Headline
 
     @Test func budgetHeadlineShowsTheSpentShareOfTheWeeklyBudget() {

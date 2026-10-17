@@ -149,6 +149,11 @@ nonisolated extension Advice {
 }
 
 nonisolated extension ProviderCard {
+    /// The share of all this card's tokens burned by `model`, not just of the models shown.
+    func share(of model: ModelUsage) -> Double {
+        Double(model.split.heat) / Double(max(tokens, 1))
+    }
+
     /// The headline in `mode`; `windowLabel` names the trailing window the tokens cover.
     func headline(_ mode: HeadlineMode, windowLabel: String) -> CardHeadline {
         if mode == .budget, let budget {

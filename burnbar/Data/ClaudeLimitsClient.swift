@@ -15,7 +15,11 @@ import Foundation
 /// refresh is forced. HTTP 429 backs off by doubling the interval up to `maxBackoff`, or longer
 /// when `Retry-After` asks for it (still capped), and even a forced refresh waits it out.
 /// Every failure keeps the last known rows (with their original `measuredAt`) and explains
-/// itself in `LimitSnapshot.status`.
+/// itself in `LimitSnapshot.status`. Before any live reading this launch, the last known rows are
+/// the newest persisted samples of windows that have not reset yet (see `lastPersisted(now:account:)`).
+/// Every reading carries the opaque key of the account it was read for (`accountIdentity`, read
+/// when the token is read from the Keychain), and only rows of the account signed in now are shown
+/// after a failure. Without a known account no persisted samples are shown: they may be anyone's.
 actor ClaudeLimitsClient: LimitsSource {
     static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     static let keychainService = "Claude Code-credentials"
@@ -44,31 +48,46 @@ actor ClaudeLimitsClient: LimitsSource {
     private let transport: any HTTPTransport
     private let refreshInterval: TimeInterval
     private let maxBackoff: TimeInterval
+    /// Persisted readings from earlier launches; the fallback until a live reading arrives.
+    private let samples: (any LimitSampleRecording)?
+    /// Which account is signed in, so persisted samples of another account are never shown.
+    private let accountIdentity: (any ClaudeAccountIdentifying)?
 
     /// What the latest refresh produced; returned while the cache or a backoff holds.
     private var current: LimitSnapshot?
     /// The latest successful snapshot, whose rows failures keep showing.
     private var lastLive: LimitSnapshot?
+    /// Set by a missing or rejected sign-in: persisted samples may belong to another account
+    /// until a live reading confirms the current one.
+    private var persistedUntrusted = false
     private var lastAttempt: Date?
     private var backoffInterval: TimeInterval?
     private var backoffUntil: Date?
     private var inFlight: Task<LimitSnapshot, Never>?
     /// The token in use; dropped when it expires or the endpoint rejects it.
     private var cachedCredentials: ClaudeCredentials?
+    /// The account key read alongside `cachedCredentials`, which the token belongs to.
+    private var cachedAccount: String?
     /// Set after a Keychain read failed (other than not-found); only a forced refresh retries.
     private var keychainFailed = false
 
     private enum CredentialsLookup {
         case found(ClaudeCredentials)
         case failed(String)
+        /// No sign-in at all: whatever was known may belong to another account.
+        case signedOut(String)
     }
 
     init(
         keychain: any KeychainReading = SecurityKeychainReader(),
         transport: any HTTPTransport = URLSessionTransport(),
         refreshInterval: TimeInterval = defaultRefreshInterval,
-        maxBackoff: TimeInterval = defaultMaxBackoff
+        maxBackoff: TimeInterval = defaultMaxBackoff,
+        samples: (any LimitSampleRecording)? = nil,
+        account: (any ClaudeAccountIdentifying)? = nil
     ) {
+        self.samples = samples
+        self.accountIdentity = account
         self.keychain = keychain
         self.transport = transport
         self.refreshInterval = refreshInterval
@@ -101,7 +120,8 @@ actor ClaudeLimitsClient: LimitsSource {
         let credentials: ClaudeCredentials
         switch await lookUpCredentials(now: now, force: force) {
         case .found(let found): credentials = found
-        case .failed(let status): return degraded(status, now: now)
+        case .failed(let status): return await degraded(status, now: now)
+        case .signedOut(let status): return signedOut(status, now: now)
         }
 
         let data: Data
@@ -109,31 +129,32 @@ actor ClaudeLimitsClient: LimitsSource {
         do {
             (data, response) = try await transport.data(for: Self.request(token: credentials.accessToken))
         } catch {
-            return degraded(Status.unreachable, now: now)
+            return await degraded(Status.unreachable, now: now)
         }
 
         switch response.statusCode {
         case 200..<300:
             guard let usage = try? JSONDecoder().decode(ClaudeUsageResponse.self, from: data) else {
-                return degraded(Status.notUnderstood, now: now)
+                return await degraded(Status.notUnderstood, now: now)
             }
             backoffInterval = nil
             backoffUntil = nil
-            let snapshot = LimitSnapshot(provider: .claude, rows: usage.rows(now: now), measuredAt: now)
+            let snapshot = LimitSnapshot(provider: .claude, rows: usage.rows(now: now), measuredAt: now, account: cachedAccount)
             lastLive = snapshot
+            persistedUntrusted = false
             return snapshot
         case 401, 403:
             cachedCredentials = nil
-            return degraded(Status.signInRejected, now: now)
+            return signedOut(Status.signInRejected, now: now)
         case 429:
             let local = min((backoffInterval ?? refreshInterval) * 2, maxBackoff)
             backoffInterval = local
             let requested = response.value(forHTTPHeaderField: "Retry-After").flatMap { Self.retryAfter($0, now: now) } ?? 0
             let wait = min(max(local, requested), maxBackoff)
             backoffUntil = now.addingTimeInterval(wait)
-            return degraded(Status.rateLimited(retryIn: wait), now: now)
+            return await degraded(Status.rateLimited(retryIn: wait), now: now)
         default:
-            return degraded(Status.httpError(response.statusCode), now: now)
+            return await degraded(Status.httpError(response.statusCode), now: now)
         }
     }
 
@@ -149,14 +170,15 @@ actor ClaudeLimitsClient: LimitsSource {
             keychainFailed = false
         } catch KeychainError.status(errSecItemNotFound) {
             keychainFailed = false
-            return .failed(Status.signInNotFound)
+            return .signedOut(Status.signInNotFound)
         } catch {
             keychainFailed = true
             return .failed(Status.keychainUnreadable)
         }
-        guard let data, let parsed = ClaudeCredentials(data: data) else { return .failed(Status.signInNotFound) }
+        guard let data, let parsed = ClaudeCredentials(data: data) else { return .signedOut(Status.signInNotFound) }
         guard !parsed.isExpired(now: now) else { return .failed(Status.signInExpired) }
         cachedCredentials = parsed
+        cachedAccount = accountIdentity?.claudeAccountKey()
         return .found(parsed)
     }
 
@@ -179,15 +201,56 @@ actor ClaudeLimitsClient: LimitsSource {
         return max(0, date.timeIntervalSince(now))
     }
 
-    /// The last known rows (or none) marked as not live, with `status` explaining why.
-    private func degraded(_ status: String, now: Date) -> LimitSnapshot {
-        LimitSnapshot(
+    /// No rows: a missing or rejected sign-in may mean another account, so neither the last live
+    /// reading nor the persisted samples are shown, and the last live reading is forgotten.
+    private func signedOut(_ status: String, now: Date) -> LimitSnapshot {
+        lastLive = nil
+        persistedUntrusted = true
+        return LimitSnapshot(provider: .claude, rows: [], measuredAt: now, status: status, limitsLive: false)
+    }
+
+    /// The last known rows of the current account (or none) marked as not live, with `status`
+    /// explaining why. Used for transient failures (rate limits, network, server errors).
+    private func degraded(_ status: String, now: Date) async -> LimitSnapshot {
+        let account = currentAccount()
+        // A live reading of another account (its token was replaced since) is not shown.
+        let known = if let lastLive, lastLive.account == account {
+            lastLive
+        } else {
+            await lastPersisted(now: now, account: account)
+        }
+        return LimitSnapshot(
             provider: .claude,
-            rows: lastLive?.rows ?? [],
-            measuredAt: lastLive?.measuredAt ?? now,
+            rows: known?.rows ?? [],
+            measuredAt: known?.measuredAt ?? now,
             status: status,
-            limitsLive: false
+            limitsLive: false,
+            account: known?.account
         )
+    }
+
+    /// The account the token in use belongs to, else the one signed in now.
+    private func currentAccount() -> String? {
+        cachedCredentials != nil ? cachedAccount : accountIdentity?.claudeAccountKey()
+    }
+
+    /// The newest persisted sample of `account` for each known window whose reported reset is still ahead,
+    /// measured at the oldest of those samples so no row looks fresher than it is; nil when there is none. Window lengths come from
+    /// `ClaudeUsageResponse.layout`; samples without a reported reset cannot be placed and are skipped.
+    /// Nil without a known account: samples without one (or of another) may be anyone's.
+    private func lastPersisted(now: Date, account: String?) async -> LimitSnapshot? {
+        guard let samples, let account, !persistedUntrusted else { return nil }
+        var rows: [LimitRow] = []
+        var measuredAt: Date?
+        for (_, label, minutes) in ClaudeUsageResponse.layout {
+            guard let sample = await samples.samples(provider: .claude, label: label).last(where: { $0.account == account }),
+                  let resetsAt = sample.resetsAt, resetsAt > now else { continue }
+            rows.append(LimitRow(label: label, percent: sample.percent, resetsAt: resetsAt,
+                                 windowDuration: TimeInterval(minutes) * 60))
+            measuredAt = min(measuredAt ?? sample.t, sample.t)
+        }
+        guard let measuredAt else { return nil }
+        return LimitSnapshot(provider: .claude, rows: rows, measuredAt: measuredAt, limitsLive: false, account: account)
     }
 
     nonisolated static func request(token: String) -> URLRequest {
