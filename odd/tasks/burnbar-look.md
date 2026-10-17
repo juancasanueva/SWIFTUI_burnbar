@@ -41,5 +41,7 @@ T1 (delegated writer, done):
 - Verification: `xcodebuild … -only-testing:burnbarTests test`: ** TEST SUCCEEDED **; `xcodebuild … build`: ** BUILD SUCCEEDED **. Test-first exception: pure visual restyle, render check stands in.
 - Renders: /private/tmp/claude-501/-Users-juancasanueva-programming-swiftUI-burnbar/f0f4e176-7b2c-47ee-8ca9-bd9883c8955a/scratchpad/cockpit.png and setup.png (before: cockpit-before.png, setup-before.png).
 
+- Commit: 8f4343e (feat: burn bar look for cockpit and setup). Assess: medium, slice_budget_reached. Native review granted, one lens (reliability), approved with no findings and acknowledged; reviewed boundary 8f4343e.
+
 ## Next step
 User review of the renders / live app.
