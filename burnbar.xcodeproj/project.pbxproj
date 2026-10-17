@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BCB1000000000000000000A1 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = BCB1000000000000000000A2 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BCBDDE36308189BD00FABEA6 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,14 +28,27 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		BCBDDE26308189BC00FABEA6 /* burnbar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = burnbar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BCBDDE26308189BC00FABEA6 /* Burnbar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Burnbar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BCBDDE35308189BD00FABEA6 /* burnbarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = burnbarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BCBDDE3F308189BD00FABEA6 /* burnbarUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = burnbarUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		BCB1000000000000000000A4 /* Exceptions for "burnbar" folder in "burnbar" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Resources/Burnbar-Info.plist",
+			);
+			target = BCBDDE25308189BC00FABEA6 /* burnbar */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		BCBDDE28308189BC00FABEA6 /* burnbar */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BCB1000000000000000000A4 /* Exceptions for "burnbar" folder in "burnbar" target */,
+			);
 			path = burnbar;
 			sourceTree = "<group>";
 		};
@@ -52,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BCB1000000000000000000A1 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,7 +103,7 @@
 		BCBDDE27308189BC00FABEA6 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				BCBDDE26308189BC00FABEA6 /* burnbar.app */,
+				BCBDDE26308189BC00FABEA6 /* Burnbar.app */,
 				BCBDDE35308189BD00FABEA6 /* burnbarTests.xctest */,
 				BCBDDE3F308189BD00FABEA6 /* burnbarUITests.xctest */,
 			);
@@ -112,9 +130,10 @@
 			);
 			name = burnbar;
 			packageProductDependencies = (
+				BCB1000000000000000000A2 /* Sparkle */,
 			);
 			productName = burnbar;
-			productReference = BCBDDE26308189BC00FABEA6 /* burnbar.app */;
+			productReference = BCBDDE26308189BC00FABEA6 /* Burnbar.app */;
 			productType = "com.apple.product-type.application";
 		};
 		BCBDDE34308189BD00FABEA6 /* burnbarTests */ = {
@@ -195,6 +214,9 @@
 			);
 			mainGroup = BCBDDE1D308189BC00FABEA6;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BCB1000000000000000000A3 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BCBDDE27308189BC00FABEA6 /* Products */;
 			projectDirPath = "";
@@ -392,6 +414,7 @@
 		BCBDDE4A308189BD00FABEA6 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -402,6 +425,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "burnbar/Resources/Burnbar-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Burnbar;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -410,7 +435,8 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.juancasanueva.burnbar;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = burnbar;
+				PRODUCT_NAME = Burnbar;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -424,6 +450,7 @@
 		BCBDDE4B308189BD00FABEA6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
@@ -434,6 +461,8 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "burnbar/Resources/Burnbar-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Burnbar;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -442,7 +471,8 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.juancasanueva.burnbar;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_MODULE_NAME = burnbar;
+				PRODUCT_NAME = Burnbar;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -470,7 +500,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/burnbar.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/burnbar";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Burnbar.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Burnbar";
 			};
 			name = Debug;
 		};
@@ -491,7 +521,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/burnbar.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/burnbar";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Burnbar.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Burnbar";
 			};
 			name = Release;
 		};
@@ -573,6 +603,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BCB1000000000000000000A3 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.6;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BCB1000000000000000000A2 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BCB1000000000000000000A3 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BCBDDE1E308189BC00FABEA6 /* Project object */;
 }

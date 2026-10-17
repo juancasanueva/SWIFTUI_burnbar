@@ -54,6 +54,24 @@ macOS may ask once for permission to let burnbar read the Claude Code Keychain i
 - Xcode 26.6 or later to build
 - Claude Code and/or Codex CLI installed and signed in
 
+## Install
+
+With Homebrew:
+
+```sh
+brew install --cask juancasanueva/tap/burnbar
+```
+
+Or download `Burnbar-<version>.zip` from the [latest release](https://github.com/juancasanueva/SWIFTUI_burnbar/releases/latest), unzip it and move `Burnbar.app` to `/Applications`. Releases are signed with Developer ID and notarized by Apple, and run on Apple Silicon.
+
+## Updates
+
+Open Setup and click **Check for Updates…** in the Updates group. Burnbar uses [Sparkle](https://sparkle-project.org) and only installs updates signed with its own key.
+
+Automatic checks are **off by default**: Burnbar does not contact the update feed until you turn on **Automatic checks** in Setup or check by hand. Homebrew installs update the same way (the cask defers to the app).
+
+Maintainers: see [RELEASING.md](RELEASING.md) for how a tag becomes a notarized release, the update feed and the Homebrew cask.
+
 ## Build and run
 
 ```sh
