@@ -105,7 +105,7 @@ Then watch the run under the repository's Actions tab:
 | Staple | Staples the ticket and repackages | Stapling fails |
 | Verify | Gates against the copy extracted from the zip | Any gate |
 | Publish | `gh release create --verify-tag --generate-notes` | — |
-| Build the appcast | Signs the zip and writes the whole feed outside the checkout | Signing or emission fails (stable tags only) |
+| Build the appcast | Fetches the live feed, signs the zip and writes the whole feed outside the checkout | The feed fetch fails (anything but a usable 200 or a 404), or signing or emission fails (stable tags only) |
 | Configure Pages / Upload / Deploy | Deploys that directory under this commit | The deployment fails |
 | Cleanup | Deletes the keychain and the API key, always | — |
 
@@ -114,16 +114,66 @@ commit SHA and silently ignores a second deployment of the same commit, so a sec
 tag on one commit would publish a release the feed never learns about. The distinct-commit
 gate stops that before anything is signed.
 
-**A failure publishes nothing.** Every gate runs before the publish step. To retry, delete the
-tag and tag again (on the same commit is fine when the run never reached the deploy):
+**The live feed is never replaced on a guess.** `scripts/appcast.sh` treats only an HTTP 404
+as "no feed yet" (the first release) and starts an empty channel. A DNS failure, a timeout, a
+5xx or any other status, and a 200 whose body is empty or has no `</channel>`, all stop the
+run, so a transient error can never replace the live feed with a one-item feed.
+
+### When a run fails
+
+Where the run stopped decides what is already public. `gh release create` is the line.
+
+**Before Publish** (both gates, Pin Xcode, keychain, Archive, Export, Package, Notarize,
+Staple, Verify, signing evidence): nothing was published. Fix the cause, delete the tag and
+tag again; the same commit is fine.
 
 ```sh
 git push --delete origin v1.0.0
 git tag -d v1.0.0
 ```
 
-**Never delete or unflag a published release.** The appcast points at published assets. A bad
-release is withdrawn by cutting a new patch tag.
+**After Publish** (Build the appcast, Configure Pages, Upload, Deploy): the GitHub release and
+its zip **already exist** and are `releases/latest`, but the feed was not updated, so no
+installed copy is offered the version. The Homebrew tap's scheduled bump, or anyone browsing
+the releases page, may already have picked it up. There is no step-level retry: **Re-run
+failed jobs** re-runs the whole job, which stops at Publish because the release for that tag
+already exists. Pick one:
+
+1. **Cut the next patch version (preferred).** Leave the release as it is, fix the cause on a
+   new commit, and tag `v1.0.1` there. Its run publishes `v1.0.1` and a feed that offers it;
+   the stranded `v1.0.0` simply never has a feed item. Nothing already seen is withdrawn.
+2. **Delete the release and re-run, when the cause was outside the repository** (a transient
+   network or Pages failure, the `github-pages` tag rule, a secret). Delete only the release,
+   keep the tag, then **Re-run failed jobs**. The re-run uses the same tag, commit, workflow
+   file and run number (so the same build number), and notarizes again:
+
+   ```sh
+   gh release delete v1.0.0 --repo juancasanueva/SWIFTUI_burnbar --yes
+   ```
+
+3. **Delete the release and the tag, and re-tag**, when the fix needs a code change but the
+   version must stay `1.0.0`. Delete both, then tag the fixing commit:
+
+   ```sh
+   gh release delete v1.0.0 --repo juancasanueva/SWIFTUI_burnbar --yes --cleanup-tag
+   git tag -d v1.0.0
+   ```
+
+   The new run has a higher build number and a freshly notarized zip with different bytes.
+   Anyone who already downloaded `1.0.0`, and a cask that already bumped to it, hold a zip
+   whose checksum no longer matches the asset of that name.
+
+Options 2 and 3 carry the same risk: between the first publish and the deletion, clients may
+have seen `v1.0.0`. They are only safe because the feed never pointed at it. If the Deploy step
+itself started and failed, the deployments API can report a non-empty status for the commit,
+and the distinct-commit gate then refuses any re-run or re-tag on it: use option 1.
+
+`scripts/appcast.sh` can be run locally (see 5) to reproduce an appcast failure and inspect the
+feed it would emit, but it does not deploy. The release job is the only path to Pages.
+
+**Never delete or unflag a release the feed points at.** Once a version has a feed item,
+installed copies may already be updating to its asset. A bad release is withdrawn by cutting a
+new patch tag.
 
 A tag containing a hyphen (`v0.0.1-rc.1`) publishes as a **prerelease** and adds **no feed
 entry**, so an installed copy is never offered one. Use it to rehearse against the real
@@ -253,6 +303,10 @@ rather than lowering the deployment target.
 
 **The run stopped at the distinct-commit gate.** This commit already deployed the feed. Put
 the new version on a new commit and tag that.
+
+**Build the appcast failed on the feed fetch.** The live feed answered something other than
+a usable 200 or a 404, or could not be reached. The release already exists; follow "After
+Publish" in 3.
 
 **The run is green but the feed still shows the previous version.** Usually the CDN; compare
 `last-modified` on the feed URL. A hyphenated tag skips every publication step by design.
