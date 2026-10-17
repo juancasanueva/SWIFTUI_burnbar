@@ -67,10 +67,50 @@ struct UpdateProjectFileTests {
         var importers: [String] = []
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
-            if text.components(separatedBy: "\n").contains(where: { $0.hasPrefix("import Sparkle") }) {
+            if text.components(separatedBy: "\n").contains(where: Self.importsSparkle) {
                 importers.append(url.lastPathComponent)
             }
         }
         #expect(importers == ["SparkleUpdateChecker.swift"])
+    }
+
+    /// The guard's matcher sees through indentation and import attributes, and only matches the
+    /// Sparkle module itself.
+    @Test(arguments: [
+        "import Sparkle",
+        "    import Sparkle",
+        "\timport Sparkle",
+        "@preconcurrency import Sparkle",
+        "@_implementationOnly import Sparkle",
+        "public import Sparkle",
+        "@preconcurrency public import Sparkle",
+        "import class Sparkle.SPUUpdater",
+        "import Sparkle.SPUUpdater",
+        "import Sparkle // the adapter",
+    ])
+    func theGuardCatchesEveryImportSpelling(line: String) {
+        #expect(Self.importsSparkle(line))
+    }
+
+    @Test(arguments: ["import SparkleKit", "// import Sparkle", "let text = \"import Sparkle\"", "import Foundation"])
+    func theGuardIgnoresLinesThatDoNotImportSparkle(line: String) {
+        #expect(Self.importsSparkle(line) == false)
+    }
+
+    /// Whether one source line imports the Sparkle module (or a declaration from it).
+    /// Leading attributes (`@preconcurrency`, `@_implementationOnly`, `@_spi(…)`) and access
+    /// modifiers are skipped, then `import`, an optional declaration kind, and the module path.
+    static func importsSparkle(_ line: String) -> Bool {
+        let modifiers: Set<String> = ["public", "package", "internal", "fileprivate", "private"]
+        let kinds: Set<String> = ["class", "struct", "enum", "protocol", "typealias", "func", "var", "let"]
+        var tokens = line.split(whereSeparator: \.isWhitespace).map(String.init)[...]
+        while let first = tokens.first, first.hasPrefix("@") || modifiers.contains(first) {
+            tokens = tokens.dropFirst()
+        }
+        guard tokens.first == "import" else { return false }
+        tokens = tokens.dropFirst()
+        if let kind = tokens.first, kinds.contains(kind) { tokens = tokens.dropFirst() }
+        guard let path = tokens.first else { return false }
+        return path.split(separator: ".").first == "Sparkle"
     }
 }
