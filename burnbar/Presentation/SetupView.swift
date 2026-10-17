@@ -112,7 +112,8 @@ struct SetupView: View {
                               name: { SetupView.capitalizedFirst($0.phrase) })
                 }
                 SetupGroup("Budget windows") {
-                    CheckboxRow(title: "5-hour session windows", caption: "always",
+                    CheckboxRow(title: "5-hour session windows",
+                                caption: SetupDisplay.fiveHourCaption(isOn: controls.showFiveHourWindows.wrappedValue),
                                 isOn: controls.showFiveHourWindows)
                 }
             }

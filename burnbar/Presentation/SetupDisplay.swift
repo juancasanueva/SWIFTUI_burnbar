@@ -68,6 +68,11 @@ nonisolated enum SetupDisplay {
     static func warningsCaption(dismissedCount: Int) -> String {
         dismissedCount > 0 ? "\(dismissedCount) dismissed" : "nothing dismissed"
     }
+
+    /// Unticked, a 5-hour window still shows when it is about to run out.
+    static func fiveHourCaption(isOn: Bool) -> String {
+        isOn ? "always" : "only near the limit"
+    }
 }
 
 /// A short label for a pill in a segmented row.

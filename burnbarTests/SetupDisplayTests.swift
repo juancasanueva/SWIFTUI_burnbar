@@ -83,6 +83,11 @@ struct SetupDisplayTests {
         #expect(SetupDisplay.warningsCaption(dismissedCount: count) == expected)
     }
 
+    @Test func fiveHourCaptionSaysWhenAnUntickedWindowStillShows() {
+        #expect(SetupDisplay.fiveHourCaption(isOn: true) == "always")
+        #expect(SetupDisplay.fiveHourCaption(isOn: false) == "only near the limit")
+    }
+
     // MARK: Option labels
 
     @Test func optionLabelsMatchTheReference() {
