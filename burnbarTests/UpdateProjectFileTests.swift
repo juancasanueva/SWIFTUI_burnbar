@@ -26,6 +26,12 @@ struct UpdateProjectFileTests {
         #expect(try ProjectSources.appTargetBlocksDeclaring("ENABLE_HARDENED_RUNTIME = YES;") == 2)
     }
 
+    /// The release ships arm64 only, so the cask can depend on it: both configurations pin it
+    /// rather than leaving it to the command line in `scripts/release.sh`.
+    @Test func bothAppConfigurationsBuildArm64Only() throws {
+        #expect(try ProjectSources.appTargetBlocksDeclaring("ARCHS = arm64;") == 2)
+    }
+
     /// Exactly one Sparkle package, pinned to exactVersion 2.9.6, linked once by the app, and no
     /// embed phase: Sparkle auto-embeds, so an Embed Frameworks phase would double-sign it.
     @Test func theProjectLinksExactlyOnePinnedSparklePackageWithNoEmbedPhase() throws {
