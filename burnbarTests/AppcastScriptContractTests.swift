@@ -209,46 +209,116 @@ struct AppcastScriptContractTests {
         return String(rest[rest.startIndex..<end.lowerBound])
     }
 
-    /// Only a 404 means "no feed yet".
+    /// The feed is fetched by exactly one `curl` call site.
+    ///
+    /// The behavioural tests below run the real script against a stubbed `curl`,
+    /// so they only prove something about production if every feed fetch goes
+    /// through the one call site they exercise.
+    @Test("The live feed has exactly one curl call site, in the fetch section")
+    func theLiveFeedHasExactlyOneCurlCallSite() throws {
+        let script = try AppcastScriptSources.script()
+        let fetch = try Self.fetchSection(of: script)
+        let feedFetches = { (text: String) in
+            AppcastScriptSources.commandInvocations(of: "curl", in: text).filter { $0.contains("$FEED_URL") }
+        }
+
+        #expect(feedFetches(script).count == 1)
+        #expect(feedFetches(fetch).count == 1)
+    }
+
+    /// Only a 404 means "no feed yet", and it is never retried.
     ///
     /// The merged feed replaces the live one wholesale, so a fetch failure read
     /// as "first release" would publish a one-item feed and strand every
-    /// installed copy on a version it skipped. A DNS failure, a timeout, a 5xx or
-    /// any other non-200 must stop the run instead. That needs the status code
-    /// itself: `curl -f` folds a 404 and a 503 into the same exit status, and a
-    /// bare `if ! curl` folds a network failure into it too.
-    @Test("Only an HTTP 404 starts an empty channel")
-    func onlyA404StartsAnEmptyChannel() throws {
-        let fetch = try Self.fetchSection(of: try AppcastScriptSources.script())
-        let feedFetches = AppcastScriptSources.commandInvocations(of: "curl", in: fetch)
-            .filter { $0.contains("$FEED_URL") }
+    /// installed copy on a version it skipped.
+    @Test("A 404 starts an empty channel after one attempt")
+    func a404StartsAnEmptyChannelAfterOneAttempt() throws {
+        let run = try FeedFetchHarness.run(responses: ["404"])
 
-        #expect(feedFetches.count == 1)
-        let invocation = try #require(feedFetches.first)
-        #expect(invocation.contains("-w '%{http_code}'"), "the fetch must read the status code")
-        let flagClusters = invocation.split(separator: " ")
-            .filter { $0.hasPrefix("-") && !$0.hasPrefix("--") }
-        #expect(!flagClusters.contains { $0.contains("f") }, "curl -f hides which failure it was")
-
-        #expect(!fetch.contains("if ! curl"))
-        #expect(fetch.contains("404)"))
-        #expect(fetch.contains("200)"))
-        #expect(fetch.contains("*)"))
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.count == 1)
+        let feed = try #require(run.feed.flatMap { String(data: $0, encoding: .utf8) })
+        #expect(feed.contains("<channel>"))
+        #expect(feed.contains("</channel>"))
+        #expect(!feed.contains("<item>"))
+        // The heredoc is tab-indented and `<<-` strips the tabs: an unstripped
+        // tab before the declaration would make the document malformed XML.
+        #expect(feed.hasPrefix("<?xml"))
     }
 
-    /// Every fetch outcome other than a usable 200 or a 404 exits non-zero.
-    ///
-    /// Three refusals: curl itself failing (DNS, timeout, TLS), an unexpected
-    /// status code, and a 200 whose body is empty or is not a feed. Each must
-    /// leave the live feed untouched rather than start over.
-    @Test("Any other fetch outcome exits non-zero")
-    func anyOtherFetchOutcomeExitsNonZero() throws {
-        let fetch = try Self.fetchSection(of: try AppcastScriptSources.script())
-        let exits = fetch.components(separatedBy: "exit 1").count - 1
+    /// A usable 200 is kept byte for byte.
+    @Test("A valid 200 is kept as served")
+    func aValid200IsKeptAsServed() throws {
+        let run = try FeedFetchHarness.run(responses: ["200"], body: FeedFetchHarness.liveFeed)
 
-        #expect(exits >= 3, "expected refusals for curl failure, unexpected status and an unusable 200")
-        #expect(fetch.contains("[ ! -s \"$WORK/current.xml\" ]"), "an empty 200 must be refused")
-        #expect(fetch.contains("</channel>"))
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.count == 1)
+        #expect(run.feed == Data(FeedFetchHarness.liveFeed.utf8))
+    }
+
+    /// Every other outcome exits non-zero and leaves no feed file behind.
+    ///
+    /// curl failing (DNS, connection refused, timeout), a 5xx that never
+    /// recovers, another 4xx, and a 200 whose body is empty or is not a feed.
+    @Test("Any other fetch outcome exits non-zero and writes nothing", arguments: FeedFetchFailure.all)
+    func anyOtherFetchOutcomeExitsNonZero(_ failure: FeedFetchFailure) throws {
+        let run = try FeedFetchHarness.run(responses: failure.responses, body: failure.body)
+
+        #expect(run.exitStatus != 0, "\(run.log)")
+        #expect(run.feed == nil, "a refused fetch must not leave a feed file")
+        #expect(run.curlCalls.count == failure.expectedAttempts)
+    }
+
+    /// A transient failure is retried, and a later success is kept.
+    @Test("A transient 5xx or timeout is retried until the feed answers")
+    func aTransientFailureIsRetried() throws {
+        let run = try FeedFetchHarness.run(responses: ["503", "exit28", "200"], body: FeedFetchHarness.liveFeed)
+
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.count == 3)
+        #expect(run.feed == Data(FeedFetchHarness.liveFeed.utf8))
+    }
+
+    /// Every attempt is bounded in time and reads the status code itself.
+    ///
+    /// `-f` is refused because it folds a 404 and a 503 into one exit status, and
+    /// curl's own `--retry-all-errors` because it would retry a 404.
+    @Test("Every attempt carries connect and total timeouts and no -f")
+    func everyAttemptIsBounded() throws {
+        let run = try FeedFetchHarness.run(responses: ["503", "200"], body: FeedFetchHarness.liveFeed)
+
+        #expect(run.curlCalls.count == 2)
+        for call in run.curlCalls {
+            #expect(call.contains("--connect-timeout"), "\(call)")
+            #expect(call.contains("--max-time"), "\(call)")
+            #expect(call.contains("%{http_code}"), "\(call)")
+            #expect(!call.contains("--retry-all-errors"), "\(call)")
+            let clusters = call.filter { $0.hasPrefix("-") && !$0.hasPrefix("--") }
+            #expect(!clusters.contains { $0.contains("f") }, "curl -f hides which failure it was: \(call)")
+        }
+    }
+
+    /// The build reads the pre-fetched feed and never fetches it again.
+    ///
+    /// In CI the feed is fetched before the release is published; the build step
+    /// runs after. A missing pre-fetched file must stop the build rather than
+    /// quietly fetch a second time after the release is already public.
+    @Test("The build refuses a missing pre-fetched feed without fetching")
+    func theBuildRefusesAMissingPreFetchedFeed() throws {
+        let run = try FeedFetchHarness.run(mode: nil, responses: ["200"], body: FeedFetchHarness.liveFeed)
+
+        #expect(run.exitStatus != 0, "\(run.log)")
+        #expect(run.curlCalls.isEmpty)
+    }
+
+    /// A prerelease tag fetches nothing, in either mode.
+    @Test("A prerelease tag skips the fetch")
+    func aPrereleaseTagSkipsTheFetch() throws {
+        let run = try FeedFetchHarness.run(responses: ["200"], body: FeedFetchHarness.liveFeed, tag: "v1.0.0-beta.1")
+
+        #expect(run.exitStatus == 0, "\(run.log)")
+        #expect(run.curlCalls.isEmpty)
+        #expect(run.feed == nil)
     }
 
     /// A prerelease tag produces no feed item at all.
@@ -264,5 +334,136 @@ struct AppcastScriptContractTests {
         #expect(script.contains("case \"$GITHUB_REF_NAME\" in"))
         #expect(script.contains("*-*)"))
         #expect(script.contains("exit 0"))
+    }
+}
+
+// MARK: - Running the real fetch against controlled responses
+
+/// One refused fetch outcome, and how many attempts it is allowed.
+nonisolated struct FeedFetchFailure: Sendable, CustomTestStringConvertible {
+    let name: String
+    let responses: [String]
+    let body: String?
+    let expectedAttempts: Int
+
+    var testDescription: String { name }
+
+    static let all: [FeedFetchFailure] = [
+        FeedFetchFailure(name: "503 on every attempt", responses: ["503"], body: nil, expectedAttempts: 4),
+        FeedFetchFailure(name: "connection refused", responses: ["exit7"], body: nil, expectedAttempts: 4),
+        FeedFetchFailure(name: "DNS failure", responses: ["exit6"], body: nil, expectedAttempts: 4),
+        FeedFetchFailure(name: "timeout", responses: ["exit28"], body: nil, expectedAttempts: 4),
+        FeedFetchFailure(name: "403, never retried", responses: ["403", "200"], body: FeedFetchHarness.liveFeed,
+                         expectedAttempts: 1),
+        FeedFetchFailure(name: "empty 200", responses: ["200"], body: "", expectedAttempts: 1),
+        FeedFetchFailure(name: "200 without </channel>", responses: ["200"], body: "<html>maintenance</html>",
+                         expectedAttempts: 1)
+    ]
+}
+
+/// Runs `scripts/appcast.sh` with a stubbed `curl` first on `PATH`.
+///
+/// A stub rather than a local HTTP server: it needs no port, no network and no
+/// timing, so every outcome — including DNS failures and timeouts, which a
+/// server cannot produce on demand — is deterministic inside `xcodebuild test`.
+/// The stub answers the n-th call with the n-th response (the last one repeats),
+/// and records each call's arguments one per line. A response is an HTTP status
+/// or `exit<N>`, a curl failure with exit status N.
+nonisolated enum FeedFetchHarness {
+
+    struct Run {
+        let exitStatus: Int32
+        let feed: Data?
+        let curlCalls: [[String]]
+        let log: String
+    }
+
+    static let liveFeed = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+                <title>Burnbar</title>
+                <item><title>Version 1.0.0</title></item>
+            </channel>
+        </rss>
+
+        """
+
+    static let stubCurl = #"""
+        #!/bin/bash
+        set -eu
+        printf '%s\x1f' "$@" >> "$STUB_DIR/calls"
+        printf '\n' >> "$STUB_DIR/calls"
+        n="$(wc -l < "$STUB_DIR/calls")"
+        read -r -a responses <<< "$STUB_RESPONSES"
+        i=$(( n <= ${#responses[@]} ? n - 1 : ${#responses[@]} - 1 ))
+        response="${responses[$i]}"
+        out=""
+        while [ $# -gt 0 ]; do
+            case "$1" in -o) out="$2"; shift 2 ;; *) shift ;; esac
+        done
+        case "$response" in
+            exit*) echo "curl: (${response#exit}) stubbed failure" >&2; printf '000'; exit "${response#exit}" ;;
+            200) if [ -f "$STUB_DIR/body" ]; then cp "$STUB_DIR/body" "$out"; fi ;;
+            *) printf '<html>%s</html>' "$response" > "$out" ;;
+        esac
+        printf '%s' "$response"
+        """#
+
+    /// `mode` is the script's first argument; `nil` runs the build.
+    static func run(
+        mode: String? = "fetch",
+        responses: [String],
+        body: String? = nil,
+        tag: String = "v1.0.0"
+    ) throws -> Run {
+        let fileManager = FileManager.default
+        let dir = fileManager.temporaryDirectory.appendingPathComponent("feed-fetch-\(UUID().uuidString)")
+        let stubs = dir.appendingPathComponent("bin")
+        try fileManager.createDirectory(at: stubs, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: dir) }
+
+        let curl = stubs.appendingPathComponent("curl")
+        try Data(stubCurl.utf8).write(to: curl)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: curl.path)
+        if let body { try Data(body.utf8).write(to: dir.appendingPathComponent("body")) }
+
+        let feedFile = dir.appendingPathComponent("prefetched/current.xml")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [AppcastScriptSources.scriptURL.path] + (mode.map { [$0] } ?? [])
+        process.currentDirectoryURL = dir
+        process.environment = [
+            "PATH": "\(stubs.path):/usr/bin:/bin",
+            "HOME": dir.path,
+            "STUB_DIR": dir.path,
+            "STUB_RESPONSES": responses.joined(separator: " "),
+            "GITHUB_REF_NAME": tag,
+            "FEED_URL": "https://feed.invalid/appcast.xml",
+            "CURRENT_FEED_FILE": feedFile.path,
+            "FEED_FETCH_RETRY_DELAY": "0",
+            "VERSION": "1.0.0",
+            "BUILD_NUMBER": "1",
+            "ASSET_URL": "https://example.invalid/Burnbar-1.0.0.zip",
+            "ZIP_PATH": dir.appendingPathComponent("Burnbar-1.0.0.zip").path,
+            "OUTPUT_DIR": dir.appendingPathComponent("site").path,
+            "SPARKLE_PRIVATE_KEY": "not-a-key"
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let calls = (try? String(contentsOf: dir.appendingPathComponent("calls"), encoding: .utf8)) ?? ""
+        return Run(
+            exitStatus: process.terminationStatus,
+            feed: mode == nil ? nil : try? Data(contentsOf: feedFile),
+            curlCalls: calls.split(separator: "\n").map { line in
+                line.split(separator: "\u{1F}", omittingEmptySubsequences: false).dropLast().map(String.init)
+            },
+            log: String(decoding: output, as: UTF8.self)
+        )
     }
 }

@@ -156,6 +156,19 @@ jobs:
       - name: Record signing evidence
         run: codesign -dvvv --entitlements :- "build/export/Burnbar.app" 2>&1
 
+      # The live feed is fetched and validated here, **before** the release
+      # exists, so a Pages or CDN failure stops the run while nothing is public:
+      # re-tagging the same commit is then safe. The build step after Publish
+      # reads this file and never fetches the feed again. It runs last before
+      # Publish, after notarization, so the copy is minutes old at most. The
+      # fetch holds no secret.
+      - name: Fetch the live feed
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          FEED_URL: https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml
+          CURRENT_FEED_FILE: ${{ runner.temp }}/current-appcast.xml
+        run: scripts/appcast.sh fetch
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -171,13 +184,15 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "build/Burnbar-${VERSION}.zip" \
             --verify-tag --generate-notes --title "$GITHUB_REF_NAME" $PRERELEASE
 
-      # Appcast publication. Every step below carries the same prerelease guard
-      # the publish step uses for `--prerelease`: a Pages deploy is a full-site
-      # replacement, so a prerelease reaching it with an empty artifact would
-      # blank the live feed for every installed copy.
+      # Appcast publication. Every step below, like the fetch above, carries
+      # the same prerelease guard the publish step uses for `--prerelease`: a
+      # Pages deploy is a full-site replacement, so a prerelease reaching it
+      # with an empty artifact would blank the live feed for every installed
+      # copy.
       #
       # They run **after** the release exists, because the item's enclosure
-      # points at the published asset's download URL.
+      # points at the published asset's download URL. The feed they merge into
+      # was fetched before Publish, above.
       - name: Build the appcast
         if: ${{ !contains(github.ref_name, '-') }}
         env:
@@ -187,7 +202,8 @@ jobs:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           ASSET_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/Burnbar-${{ env.VERSION }}.zip
           ZIP_PATH: build/Burnbar-${{ env.VERSION }}.zip
-          FEED_URL: https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml
+          # Written by "Fetch the live feed"; read, never re-fetched.
+          CURRENT_FEED_FILE: ${{ runner.temp }}/current-appcast.xml
           # Outside the checkout, so nothing enters the repository tree and
           # there is no new stowaway surface.
           OUTPUT_DIR: ${{ runner.temp }}/site

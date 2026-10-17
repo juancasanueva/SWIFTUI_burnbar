@@ -67,6 +67,24 @@ nonisolated enum AppcastWorkflowSources {
         let end = try #require(rest.range(of: "\n    steps:"))
         return String(rest[rest.startIndex..<end.lowerBound])
     }
+
+    /// The step whose `run:` line is exactly `line`.
+    ///
+    /// `appcast.sh` runs twice — `fetch` before the release is published, the
+    /// build after — so "the step containing appcast.sh" no longer names one step.
+    static func step(running line: String, in workflow: String) -> String? {
+        steps(in: workflow).first { step in
+            step.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "run: \(line)" }
+        }
+    }
+
+    static func feedFetchStep(in workflow: String) throws -> String {
+        try #require(step(running: "scripts/appcast.sh fetch", in: workflow), "no step runs scripts/appcast.sh fetch")
+    }
+
+    static func appcastBuildStep(in workflow: String) throws -> String {
+        try #require(step(running: "scripts/appcast.sh", in: workflow), "no step runs scripts/appcast.sh")
+    }
 }
 
 // release-distribution — "A stable tag also publishes the update feed, without a
@@ -78,14 +96,15 @@ struct AppcastWorkflowTests {
 
     static let prereleaseGuard = "if: ${{ !contains(github.ref_name, '-') }}"
 
-    /// The five publication steps, identified by what each one runs.
+    /// The six publication steps, identified by their names or what they run.
     ///
     /// The guard is one of them: it is the step that decides whether this commit
     /// may publish a feed at all, so a prerelease must skip it for the same
     /// reason a prerelease skips the deploy.
     static let publicationMarkers = [
         "Refuse a second feed deployment from this commit",
-        "appcast.sh",
+        "- name: Fetch the live feed",
+        "- name: Build the appcast",
         "actions/configure-pages",
         "actions/upload-pages-artifact",
         "actions/deploy-pages"
@@ -105,22 +124,53 @@ struct AppcastWorkflowTests {
     func theAppcastStepRunsAfterTheReleaseIsPublished() throws {
         let steps = AppcastWorkflowSources.steps(in: try AppcastWorkflowSources.workflow())
 
+        let workflow = try AppcastWorkflowSources.workflow()
+        let build = try AppcastWorkflowSources.appcastBuildStep(in: workflow)
+
         let publish = try #require(steps.firstIndex { $0.contains("gh release create") })
-        let appcast = try #require(steps.firstIndex { $0.contains("appcast.sh") })
+        let appcast = try #require(steps.firstIndex(of: build))
 
         #expect(publish < appcast)
         // The split is only meaningful if it found the whole job.
         #expect(steps.count > 10)
     }
 
+    /// The live feed is fetched and validated **before** the release exists.
+    ///
+    /// A fetch failure after `gh release create` would strand a published
+    /// release with no feed item. Fetched first, a Pages or CDN error stops the
+    /// run while nothing is public yet. The build step then reads that file
+    /// instead of fetching again, so it cannot fail on the network after Publish.
+    @Test("The live feed is fetched before the release is published")
+    func theLiveFeedIsFetchedBeforeTheReleaseIsPublished() throws {
+        let workflow = try AppcastWorkflowSources.workflow()
+        let steps = AppcastWorkflowSources.steps(in: workflow)
+        let fetch = try AppcastWorkflowSources.feedFetchStep(in: workflow)
+        let build = try AppcastWorkflowSources.appcastBuildStep(in: workflow)
+
+        let fetchIndex = try #require(steps.firstIndex(of: fetch))
+        let publish = try #require(steps.firstIndex { $0.contains("gh release create") })
+        let notarize = try #require(steps.firstIndex { $0.contains("scripts/release.sh notarize") })
+        #expect(notarize < fetchIndex)
+        #expect(fetchIndex < publish)
+
+        let file = "CURRENT_FEED_FILE: ${{ runner.temp }}/current-appcast.xml"
+        #expect(fetch.contains(file))
+        #expect(build.contains(file))
+        let feed = "FEED_URL: https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml"
+        #expect(fetch.contains(feed))
+        // The fetch holds no secret: it runs before anything needs signing.
+        #expect(!fetch.contains("secrets."))
+    }
+
     /// Every publishing step is skipped on a prerelease tag.
     ///
-    /// All five, not just the first. The deploy step is the dangerous one: a
+    /// All six, not just the first. The deploy step is the dangerous one: a
     /// prerelease that reached it with an empty artifact would replace the live
     /// site — Pages deploys are a full-site replacement — and blank the feed for
     /// every installed copy.
-    @Test("All five publication steps carry the prerelease guard")
-    func allFivePublicationStepsCarryThePrereleaseGuard() throws {
+    @Test("All six publication steps carry the prerelease guard")
+    func allSixPublicationStepsCarryThePrereleaseGuard() throws {
         let steps = AppcastWorkflowSources.steps(in: try AppcastWorkflowSources.workflow())
 
         var guarded = 0
@@ -129,7 +179,7 @@ struct AppcastWorkflowTests {
             #expect(step.contains(Self.prereleaseGuard), "\(marker) is not guarded")
             guarded += 1
         }
-        #expect(guarded == 5)
+        #expect(guarded == 6)
     }
 
     // MARK: - The job header
@@ -169,9 +219,7 @@ struct AppcastWorkflowTests {
         let binding = try #require(naming.first)
         #expect(binding.trimmingCharacters(in: .whitespaces) == "SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}")
 
-        let step = try #require(
-            AppcastWorkflowSources.steps(in: workflow).first { $0.contains("appcast.sh") }
-        )
+        let step = try AppcastWorkflowSources.appcastBuildStep(in: workflow)
         #expect(step.contains("SPARKLE_PRIVATE_KEY"))
     }
 
@@ -349,9 +397,7 @@ struct ReleasePipelineNamesTests {
             .appendingPathComponent("burnbar/Resources/Burnbar-Info.plist")
         let plist = try #require(NSDictionary(contentsOf: plistURL) as? [String: Any])
         let feed = try #require(plist["SUFeedURL"] as? String)
-        let step = try #require(
-            AppcastWorkflowSources.steps(in: try AppcastWorkflowSources.workflow()).first { $0.contains("appcast.sh") }
-        )
+        let step = try AppcastWorkflowSources.feedFetchStep(in: try AppcastWorkflowSources.workflow())
 
         #expect(feed == "https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml")
         #expect(step.contains("FEED_URL: \(feed)"))
@@ -363,7 +409,7 @@ struct ReleasePipelineNamesTests {
         let workflow = try AppcastWorkflowSources.workflow()
         let steps = AppcastWorkflowSources.steps(in: workflow)
         let publish = try #require(steps.first { $0.contains("gh release create") })
-        let appcast = try #require(steps.first { $0.contains("appcast.sh") })
+        let appcast = try AppcastWorkflowSources.appcastBuildStep(in: workflow)
 
         #expect(publish.contains("\"build/Burnbar-${VERSION}.zip\""))
         #expect(appcast.contains("/Burnbar-${{ env.VERSION }}.zip"))

@@ -104,8 +104,9 @@ Then watch the run under the repository's Actions tab:
 | Notarize | `notarytool submit --wait` | Apple rejects it; the diagnostic log is printed |
 | Staple | Staples the ticket and repackages | Stapling fails |
 | Verify | Gates against the copy extracted from the zip | Any gate |
+| Fetch the live feed | `scripts/appcast.sh fetch`: fetches and validates the live feed into `$RUNNER_TEMP`, before anything is public (stable tags only) | Anything but a usable 200 or a 404, after bounded retries |
 | Publish | `gh release create --verify-tag --generate-notes` | — |
-| Build the appcast | Fetches the live feed, signs the zip and writes the whole feed outside the checkout | The feed fetch fails (anything but a usable 200 or a 404), or signing or emission fails (stable tags only) |
+| Build the appcast | Reads the pre-fetched feed (never fetches it again), signs the zip and writes the whole feed outside the checkout | The pre-fetched feed is missing, or signing or emission fails (stable tags only) |
 | Configure Pages / Upload / Deploy | Deploys that directory under this commit | The deployment fails |
 | Cleanup | Deletes the keychain and the API key, always | — |
 
@@ -119,12 +120,21 @@ as "no feed yet" (the first release) and starts an empty channel. A DNS failure,
 5xx or any other status, and a 200 whose body is empty or has no `</channel>`, all stop the
 run, so a transient error can never replace the live feed with a one-item feed.
 
+**The feed is fetched before the release is published.** The "Fetch the live feed" step runs
+right before Publish, so a Pages or CDN failure stops the run while nothing is public and the
+tag can simply be re-run or re-tagged. Each attempt is bounded (`--connect-timeout 10`,
+`--max-time 60`). Transient failures are retried, four attempts in all, 5 s, 10 s and 20 s
+apart: curl exits 6 (DNS), 7 (connect), 28 (timeout), 35 (TLS handshake), 52, 55 and 56
+(dropped connection), and HTTP 408, 429 and 5xx. A 200 and a 404 are never retried, and any
+other 4xx is refused at once. The build step after Publish reads that file and does not touch
+the network for the feed again.
+
 ### When a run fails
 
 Where the run stopped decides what is already public. `gh release create` is the line.
 
 **Before Publish** (both gates, Pin Xcode, keychain, Archive, Export, Package, Notarize,
-Staple, Verify, signing evidence): nothing was published. Fix the cause, delete the tag and
+Staple, Verify, signing evidence, Fetch the live feed): nothing was published. Fix the cause, delete the tag and
 tag again; the same commit is fine.
 
 ```sh
@@ -211,6 +221,16 @@ ZIP_PATH=build/Burnbar-1.0.0.zip \
 FEED_URL=https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml \
 OUTPUT_DIR=/tmp/site SPARKLE_PRIVATE_KEY="$(cat ~/offline/sparkle-private.key)" scripts/appcast.sh
 ```
+
+Without `CURRENT_FEED_FILE` the build fetches the feed itself, with the same timeouts, retries
+and refusals. To rehearse CI's two steps, or only check that the live feed is readable:
+
+```sh
+GITHUB_REF_NAME=v1.0.0 FEED_URL=https://juancasanueva.github.io/SWIFTUI_burnbar/appcast.xml \
+CURRENT_FEED_FILE=/tmp/current-appcast.xml scripts/appcast.sh fetch
+```
+
+Then pass the same `CURRENT_FEED_FILE` to the build above instead of `FEED_URL`.
 
 ## 6. Entitlements and hardened runtime
 
@@ -304,9 +324,13 @@ rather than lowering the deployment target.
 **The run stopped at the distinct-commit gate.** This commit already deployed the feed. Put
 the new version on a new commit and tag that.
 
-**Build the appcast failed on the feed fetch.** The live feed answered something other than
-a usable 200 or a 404, or could not be reached. The release already exists; follow "After
-Publish" in 3.
+**Fetch the live feed failed.** The live feed answered something other than a usable 200 or a
+404, or could not be reached, on every attempt. Nothing was published: check the feed URL in
+a browser, then re-run the job or re-tag ("Before Publish" in 3).
+
+**Build the appcast failed.** The feed was fetched before Publish, so this is signing,
+emission, the signing tool's download, or a missing pre-fetched file. The release already
+exists; follow "After Publish" in 3.
 
 **The run is green but the feed still shows the previous version.** Usually the CDN; compare
 `last-modified` on the feed URL. A hyphenated tag skips every publication step by design.

@@ -13,13 +13,30 @@
 # It never traces itself. Command tracing would echo the signing pipeline into
 # the job log, and the signing pipeline is where the private key is.
 #
+# Two modes, chosen by the first argument:
+#   scripts/appcast.sh fetch   fetch and validate the live feed into
+#                              CURRENT_FEED_FILE, then stop. The release workflow
+#                              runs this *before* `gh release create`, so a feed
+#                              that cannot be read stops the run while nothing is
+#                              public yet.
+#   scripts/appcast.sh         build: sign, merge and emit. It reads
+#                              CURRENT_FEED_FILE when that is set (CI, after the
+#                              release exists, never touching the network for the
+#                              feed again); when it is unset it fetches the feed
+#                              itself with the same rules (a local run).
+#
 # Environment contract:
 #   VERSION              marketing version, without the leading v (1.2.3)
 #   BUILD_NUMBER         the build number the release was archived with
 #   GITHUB_REF_NAME      the tag; a hyphen in it means prerelease, and no item
 #   ASSET_URL            the published zip's download URL
 #   ZIP_PATH             the local zip that was published, to be signed
-#   FEED_URL             the live feed, fetched so history is preserved
+#   FEED_URL             the live feed, fetched so history is preserved;
+#                        required whenever this run fetches it
+#   CURRENT_FEED_FILE    the pre-fetched feed: written by `fetch`, read by the
+#                        build; optional for the build
+#   FEED_FETCH_RETRY_DELAY  seconds before the first retry (default 5); the
+#                        delay doubles on each later one
 #   OUTPUT_DIR           where appcast.xml is written; never the repository tree
 #   SPARKLE_PRIVATE_KEY  the EdDSA private key, read on **stdin only**
 #
@@ -28,6 +45,15 @@
 
 set -euo pipefail
 
+MODE="${1:-build}"
+case "$MODE" in
+	fetch | build) ;;
+	*)
+		echo "usage: scripts/appcast.sh [fetch]" >&2
+		exit 2
+		;;
+esac
+
 # --- guard -------------------------------------------------------------------
 # The same literal the workflow uses for `--prerelease`, restated here so a hand
 # run behaves identically. A prerelease that reached the feed would be offered
@@ -35,17 +61,10 @@ set -euo pipefail
 # because the feed is the thing being trusted.
 case "$GITHUB_REF_NAME" in
 	*-*)
-		echo "prerelease $GITHUB_REF_NAME: no appcast item"
+		echo "prerelease $GITHUB_REF_NAME: no appcast item, no feed fetch"
 		exit 0
 		;;
 esac
-
-VERSION="${VERSION:?VERSION is required}"
-BUILD_NUMBER="${BUILD_NUMBER:?BUILD_NUMBER is required}"
-ASSET_URL="${ASSET_URL:?ASSET_URL is required}"
-ZIP_PATH="${ZIP_PATH:?ZIP_PATH is required}"
-FEED_URL="${FEED_URL:?FEED_URL is required}"
-OUTPUT_DIR="${OUTPUT_DIR:?OUTPUT_DIR is required}"
 
 # The pinned signing tool. The version alone would not stop a tampered binary
 # from signing the release with an attacker's key, and every installed copy
@@ -63,9 +82,6 @@ SPARKLE_TARBALL_URL="https://github.com/sparkle-project/Sparkle/releases/downloa
 # copy refuses, discovered only after publication.
 MINIMUM_SYSTEM_VERSION="26.5"
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
 # --- fetch -------------------------------------------------------------------
 # The merged feed replaces the live one wholesale, so what counts as "no feed
 # yet" decides whether history survives. Exactly one answer means that: an HTTP
@@ -79,43 +95,127 @@ trap 'rm -rf "$WORK"' EXIT
 # 200 whose body is empty or is not a feed. Treating a transient failure as
 # "first release" would replace the live feed with a one-item feed. `curl -f`
 # is deliberately not used here: it folds a 404 and a 503 into one exit status.
-echo "==> fetch $FEED_URL"
-FEED_STATUS="$(curl -sSL -w '%{http_code}' -o "$WORK/current.xml" "$FEED_URL")" || {
-    echo "could not fetch $FEED_URL (curl exit $?); refusing to replace the live feed" >&2
-    exit 1
+#
+# Every attempt is bounded (`--connect-timeout`, `--max-time`), so a stalled
+# endpoint cannot hold the signing job. Transient failures are retried by the
+# loop below rather than by curl's own `--retry`: that flag retries timeouts and
+# 408/429/5xx, but not a DNS failure or a dropped connection, and its
+# `--retry-all-errors` widening would retry a 404 too. Here a retry happens only
+# for curl exits 6 (DNS), 7 (connect), 28 (timeout), 35 (TLS handshake), 52
+# (empty reply), 55/56 (send/receive) and for HTTP 408, 429 and 5xx. A 200 and a
+# 404 are answers, never retried; any other 4xx is refused at once. Four
+# attempts, 5 s, 10 s and 20 s apart: worst case about four minutes.
+FEED_FETCH_ATTEMPTS=4
+FEED_FETCH_RETRY_DELAY="${FEED_FETCH_RETRY_DELAY:-5}"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# A usable feed: non-empty, with a closing channel tag to insert before.
+require_feed() {
+	local file="$1" source="$2"
+	if [ ! -s "$file" ]; then
+		echo "$source is missing or empty; refusing to replace the live feed" >&2
+		exit 1
+	fi
+	case "$(< "$file")" in
+		*'</channel>'*) ;;
+		*)
+			echo "$source has no </channel>; refusing to replace the live feed" >&2
+			exit 1
+			;;
+	esac
 }
-case "$FEED_STATUS" in
-    200)
-        if [ ! -s "$WORK/current.xml" ]; then
-            echo "$FEED_URL answered 200 with an empty body; refusing to replace the live feed" >&2
-            exit 1
-        fi
-        case "$(< "$WORK/current.xml")" in
-            *'</channel>'*) ;;
-            *)
-                echo "$FEED_URL answered 200 without a </channel>; refusing to replace the live feed" >&2
-                exit 1
-                ;;
-        esac
-        ;;
-    404)
-        echo "    no live feed yet (HTTP 404); starting an empty channel"
-		cat > "$WORK/current.xml" <<-XML
-			<?xml version="1.0" encoding="UTF-8"?>
-			<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-				<channel>
-					<title>Burnbar</title>
-					<description>Updates for Burnbar</description>
-					<language>en</language>
-				</channel>
-			</rss>
-		XML
-        ;;
-    *)
-        echo "$FEED_URL answered HTTP $FEED_STATUS; refusing to replace the live feed" >&2
-        exit 1
-        ;;
-esac
+
+is_transient() {
+	local curl_exit="$1" status="$2"
+	case "$curl_exit" in
+		6 | 7 | 28 | 35 | 52 | 55 | 56) return 0 ;;
+		0) ;;
+		*) return 1 ;;
+	esac
+	case "$status" in
+		408 | 429 | 5??) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Fetch the live feed into $1, or exit 1 having written nothing there.
+fetch_feed() {
+	local dest="$1" body="$WORK/fetched.xml" attempt=1 delay="$FEED_FETCH_RETRY_DELAY" status curl_exit
+	echo "==> fetch $FEED_URL"
+	while :; do
+		rm -f "$body"
+		curl_exit=0
+		status="$(curl -sSL --connect-timeout 10 --max-time 60 -w '%{http_code}' -o "$body" "$FEED_URL")" || curl_exit=$?
+		if [ "$attempt" -ge "$FEED_FETCH_ATTEMPTS" ] || ! is_transient "$curl_exit" "$status"; then
+			break
+		fi
+		echo "    attempt $attempt: curl exit $curl_exit, HTTP $status; retrying in ${delay}s"
+		sleep "$delay"
+		attempt=$((attempt + 1))
+		delay=$((delay * 2))
+	done
+
+	if [ "$curl_exit" -ne 0 ]; then
+		echo "could not fetch $FEED_URL (curl exit $curl_exit, $attempt attempt(s)); refusing to replace the live feed" >&2
+		exit 1
+	fi
+	case "$status" in
+		200)
+			require_feed "$body" "$FEED_URL (HTTP 200)"
+			;;
+		404)
+			echo "    no live feed yet (HTTP 404); starting an empty channel"
+			# `<<-` strips leading **tabs** only, so every line of this heredoc,
+			# the closing XML included, must be indented with tabs. A space-indented
+			# line keeps its spaces, and a closing XML that is not tab-indented
+			# never ends the heredoc at all.
+			cat > "$body" <<-XML
+				<?xml version="1.0" encoding="UTF-8"?>
+				<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+					<channel>
+						<title>Burnbar</title>
+						<description>Updates for Burnbar</description>
+						<language>en</language>
+					</channel>
+				</rss>
+			XML
+			;;
+		*)
+			echo "$FEED_URL answered HTTP $status ($attempt attempt(s)); refusing to replace the live feed" >&2
+			exit 1
+			;;
+	esac
+	mkdir -p "$(dirname "$dest")"
+	mv "$body" "$dest"
+}
+
+if [ "$MODE" = fetch ]; then
+	FEED_URL="${FEED_URL:?FEED_URL is required}"
+	CURRENT_FEED_FILE="${CURRENT_FEED_FILE:?CURRENT_FEED_FILE is required}"
+	fetch_feed "$CURRENT_FEED_FILE"
+	echo "==> fetched $CURRENT_FEED_FILE"
+	exit 0
+fi
+
+VERSION="${VERSION:?VERSION is required}"
+BUILD_NUMBER="${BUILD_NUMBER:?BUILD_NUMBER is required}"
+ASSET_URL="${ASSET_URL:?ASSET_URL is required}"
+ZIP_PATH="${ZIP_PATH:?ZIP_PATH is required}"
+OUTPUT_DIR="${OUTPUT_DIR:?OUTPUT_DIR is required}"
+
+# A pre-fetched feed is read, never re-fetched: in CI the release already exists
+# by now, and a missing file means the fetch step did not do its job, not that
+# the network should be tried again.
+if [ -n "${CURRENT_FEED_FILE:-}" ]; then
+	echo "==> read $CURRENT_FEED_FILE"
+	require_feed "$CURRENT_FEED_FILE" "the pre-fetched feed $CURRENT_FEED_FILE"
+	cp "$CURRENT_FEED_FILE" "$WORK/current.xml"
+else
+	FEED_URL="${FEED_URL:?FEED_URL is required}"
+	fetch_feed "$WORK/current.xml"
+fi
 
 # --- tool --------------------------------------------------------------------
 echo "==> tool Sparkle $SPARKLE_VERSION"
