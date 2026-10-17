@@ -11,6 +11,8 @@ struct burnbarApp: App {
     @State private var store: UsageStore
     @State private var launchAtLogin: LaunchAtLoginController
     @State private var clock: StripAnimationClock
+    /// The one updater: every update surface observes this instance. Typed as the port.
+    @State private var updater: any AppUpdating
 
     init() {
         let settings = BurnbarSettings()
@@ -27,6 +29,15 @@ struct burnbarApp: App {
         let launchAtLogin = LaunchAtLoginController(item: loginItem, settings: settings)
         launchAtLogin.sync()
         _launchAtLogin = State(initialValue: launchAtLogin)
+        _updater = State(initialValue: Self.makeUpdater(isInert: Self.isInert))
+    }
+
+    /// Inert runs never start Sparkle: starting it from a test run would reach the feed, write
+    /// the developer's real automatic-check preference and let Sparkle open its own window.
+    /// Building the real one applies the app's persisted preference before the updater starts.
+    static func makeUpdater(isInert: Bool) -> any AppUpdating {
+        isInert ? InMemoryAppUpdater()
+            : SparkleUpdateChecker(automaticChecks: AutomaticUpdateChecks(defaults: .standard))
     }
 
     /// Hosted unit tests launch the app, and so can UI tests (with `BURNBAR_INERT=1`): the
