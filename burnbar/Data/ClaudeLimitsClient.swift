@@ -15,7 +15,8 @@ import Foundation
 /// refresh is forced. HTTP 429 backs off by doubling the interval up to `maxBackoff`, or longer
 /// when `Retry-After` asks for it (still capped), and even a forced refresh waits it out.
 /// Every failure keeps the last known rows (with their original `measuredAt`) and explains
-/// itself in `LimitSnapshot.status`.
+/// itself in `LimitSnapshot.status`. Before any live reading this launch, the last known rows are
+/// the newest persisted samples of windows that have not reset yet (see `lastPersisted(now:)`).
 actor ClaudeLimitsClient: LimitsSource {
     static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     static let keychainService = "Claude Code-credentials"
@@ -44,6 +45,8 @@ actor ClaudeLimitsClient: LimitsSource {
     private let transport: any HTTPTransport
     private let refreshInterval: TimeInterval
     private let maxBackoff: TimeInterval
+    /// Persisted readings from earlier launches; the fallback until a live reading arrives.
+    private let samples: (any LimitSampleRecording)?
 
     /// What the latest refresh produced; returned while the cache or a backoff holds.
     private var current: LimitSnapshot?
@@ -67,8 +70,10 @@ actor ClaudeLimitsClient: LimitsSource {
         keychain: any KeychainReading = SecurityKeychainReader(),
         transport: any HTTPTransport = URLSessionTransport(),
         refreshInterval: TimeInterval = defaultRefreshInterval,
-        maxBackoff: TimeInterval = defaultMaxBackoff
+        maxBackoff: TimeInterval = defaultMaxBackoff,
+        samples: (any LimitSampleRecording)? = nil
     ) {
+        self.samples = samples
         self.keychain = keychain
         self.transport = transport
         self.refreshInterval = refreshInterval
@@ -101,7 +106,7 @@ actor ClaudeLimitsClient: LimitsSource {
         let credentials: ClaudeCredentials
         switch await lookUpCredentials(now: now, force: force) {
         case .found(let found): credentials = found
-        case .failed(let status): return degraded(status, now: now)
+        case .failed(let status): return await degraded(status, now: now)
         }
 
         let data: Data
@@ -109,13 +114,13 @@ actor ClaudeLimitsClient: LimitsSource {
         do {
             (data, response) = try await transport.data(for: Self.request(token: credentials.accessToken))
         } catch {
-            return degraded(Status.unreachable, now: now)
+            return await degraded(Status.unreachable, now: now)
         }
 
         switch response.statusCode {
         case 200..<300:
             guard let usage = try? JSONDecoder().decode(ClaudeUsageResponse.self, from: data) else {
-                return degraded(Status.notUnderstood, now: now)
+                return await degraded(Status.notUnderstood, now: now)
             }
             backoffInterval = nil
             backoffUntil = nil
@@ -124,16 +129,16 @@ actor ClaudeLimitsClient: LimitsSource {
             return snapshot
         case 401, 403:
             cachedCredentials = nil
-            return degraded(Status.signInRejected, now: now)
+            return await degraded(Status.signInRejected, now: now)
         case 429:
             let local = min((backoffInterval ?? refreshInterval) * 2, maxBackoff)
             backoffInterval = local
             let requested = response.value(forHTTPHeaderField: "Retry-After").flatMap { Self.retryAfter($0, now: now) } ?? 0
             let wait = min(max(local, requested), maxBackoff)
             backoffUntil = now.addingTimeInterval(wait)
-            return degraded(Status.rateLimited(retryIn: wait), now: now)
+            return await degraded(Status.rateLimited(retryIn: wait), now: now)
         default:
-            return degraded(Status.httpError(response.statusCode), now: now)
+            return await degraded(Status.httpError(response.statusCode), now: now)
         }
     }
 
@@ -180,14 +185,33 @@ actor ClaudeLimitsClient: LimitsSource {
     }
 
     /// The last known rows (or none) marked as not live, with `status` explaining why.
-    private func degraded(_ status: String, now: Date) -> LimitSnapshot {
-        LimitSnapshot(
+    private func degraded(_ status: String, now: Date) async -> LimitSnapshot {
+        let known = if let lastLive { lastLive } else { await lastPersisted(now: now) }
+        return LimitSnapshot(
             provider: .claude,
-            rows: lastLive?.rows ?? [],
-            measuredAt: lastLive?.measuredAt ?? now,
+            rows: known?.rows ?? [],
+            measuredAt: known?.measuredAt ?? now,
             status: status,
             limitsLive: false
         )
+    }
+
+    /// The newest persisted sample of each known window whose reported reset is still ahead,
+    /// measured at the newest of those samples; nil when there is none. Window lengths come from
+    /// `ClaudeUsageResponse.layout`; samples without a reported reset cannot be placed and are skipped.
+    private func lastPersisted(now: Date) async -> LimitSnapshot? {
+        guard let samples else { return nil }
+        var rows: [LimitRow] = []
+        var measuredAt: Date?
+        for (_, label, minutes) in ClaudeUsageResponse.layout {
+            guard let sample = await samples.samples(provider: .claude, label: label).last,
+                  let resetsAt = sample.resetsAt, resetsAt > now else { continue }
+            rows.append(LimitRow(label: label, percent: sample.percent, resetsAt: resetsAt,
+                                 windowDuration: TimeInterval(minutes) * 60))
+            measuredAt = max(measuredAt ?? sample.t, sample.t)
+        }
+        guard let measuredAt else { return nil }
+        return LimitSnapshot(provider: .claude, rows: rows, measuredAt: measuredAt, limitsLive: false)
     }
 
     nonisolated static func request(token: String) -> URLRequest {

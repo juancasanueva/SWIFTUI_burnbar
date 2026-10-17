@@ -175,6 +175,40 @@ struct ClaudeLimitsClientTests {
         #expect(await transport.requests.count == count + 1)
     }
 
+    @Test func rateLimitBeforeAnyLiveReadingShowsTheLastPersistedSamples() async throws {
+        let weeklyReset = now.addingTimeInterval(3 * 86_400)
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [
+            LimitSample(t: now.addingTimeInterval(-1200), percent: 0.12, resetsAt: weeklyReset),
+            LimitSample(t: now.addingTimeInterval(-600), percent: 0.14, resetsAt: weeklyReset),
+        ])
+        // A window that has reset since, and one without a known reset, are not shown.
+        samples.seed(.claude, label: "Session (5-hour)", [LimitSample(t: now.addingTimeInterval(-7200), percent: 0.5, resetsAt: now.addingTimeInterval(-60))])
+        samples.seed(.claude, label: "Weekly Opus (7-day)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.02)])
+        samples.seed(.codex, label: "Weekly (7-day)", [LimitSample(t: now.addingTimeInterval(-60), percent: 0.9, resetsAt: weeklyReset)])
+        let transport = StubTransport([.status(429, "{}"), .status(200, fullBody)])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: transport, samples: samples)
+
+        let limited = try #require(await sut.limits(now: now))
+        #expect(limited.rows == [LimitRow(label: "Weekly (7-day)", percent: 0.14, resetsAt: weeklyReset, windowDuration: 10080 * minute)])
+        #expect(limited.measuredAt == now.addingTimeInterval(-600))
+        #expect(limited.limitsLive == false)
+        #expect(limited.status?.hasPrefix("Claude limits rate-limited") == true)
+
+        // Once the backoff passes, the live reading wins.
+        let live = try #require(await sut.limits(now: now.addingTimeInterval(601)))
+        #expect(live.limitsLive)
+        #expect(live.rows.count == 4)
+    }
+
+    @Test func failureWithoutLiveReadingOrSamplesHasNoRows() async throws {
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]), samples: StubSampleStore())
+        let snapshot = try #require(await sut.limits(now: now))
+        #expect(snapshot.rows.isEmpty)
+        #expect(snapshot.measuredAt == now)
+        #expect(snapshot.limitsLive == false)
+    }
+
     @Test func networkErrorKeepsTheLastSnapshotWithAStatus() async throws {
         let transport = StubTransport([.status(200, fullBody), .failure(.timedOut)])
         let sut = client(transport)

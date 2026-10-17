@@ -27,6 +27,9 @@ ask-on-risk. Forecast ~400-600 authored lines, 1 task.
 
 ## Tasks
 - [x] T1 Burn Bar restyle of cockpit + setup. Route: delegated (writer trigger: 2+ non-trivial files).
+- [x] T2 Own branding: footer, Setup subtitle, quit labels, login hint, about link → Burnbar + github.com/juancasanueva/SWIFTUI_burnbar; nixfred credit kept. Route: inline. Commits 0a611c4, 0c31c68.
+- [x] T3 Quit button looked disabled (tertiary grey) → secondary grey. Route: inline. Reviewed (approved). Commit bbcfd1c.
+- [x] T4 Claude card loses its limits and burndown when the usage endpoint returns 429 right after launch (in-memory `lastLive` empty) → fall back to the latest persisted samples of the current window, marked stale. Route: delegated (writer trigger: Data + tests, preparation reading).
 
 ## Acceptance criteria
 - Rendered cockpit and setup (opt-in render tests) read as Burn Bar, not Cinderbar.
@@ -42,6 +45,13 @@ T1 (delegated writer, done):
 - Renders: /private/tmp/claude-501/-Users-juancasanueva-programming-swiftUI-burnbar/f0f4e176-7b2c-47ee-8ca9-bd9883c8955a/scratchpad/cockpit.png and setup.png (before: cockpit-before.png, setup-before.png).
 
 - Commit: 8f4343e (feat: burn bar look for cockpit and setup). Assess: medium, slice_budget_reached. Native review granted, one lens (reliability), approved with no findings and acknowledged; reviewed boundary 8f4343e.
+
+T4 (delegated writer, done):
+- Root cause: `ClaudeLimitsClient.degraded` used only the in-memory `lastLive`; right after launch it is nil, so a 429 (or any failure) produced a snapshot with no rows → no headline, budget or burndown, although `limit-samples.jsonl` held minutes-old readings.
+- Fix: `ClaudeLimitsClient` takes an optional `LimitSampleRecording`; while no live reading exists this launch, `degraded` falls back to `lastPersisted(now:)`: the newest sample per known window in `ClaudeUsageResponse.layout` (label → window minutes, so `windowDuration` is not guessed) whose reported reset is still ahead; `measuredAt` = newest such sample, `limitsLive` false, degraded status kept. Live readings win as before. `UsageStore.live` shares one `LimitSampleStore` between the client and the store; the store no longer records non-live snapshots (re-recording last known values could add samples at times a row was not read).
+- Codex: not affected — `CodexRolloutCollector` reads limits from persisted rollout files (and probes untracked ones), so it never has an empty in-memory gap after launch.
+- RED: new client tests failed to compile (`extra argument 'samples' in call`); the new UsageStore test failed with the record guard reverted. GREEN: full suite passes.
+- Verification: `xcodebuild … -only-testing:burnbarTests test`: ** TEST SUCCEEDED **; `xcodebuild … build`: ** BUILD SUCCEEDED **.
 
 ## Next step
 User review of the renders / live app.

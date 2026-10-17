@@ -105,6 +105,23 @@ final class UsageStoreTests {
         #expect(codexLimits.forces == [false, false, true])
     }
 
+    @Test func lastKnownSnapshotsAreNotRecordedButStillShowTheirPace() async throws {
+        // E.g. Claude's persisted readings while the endpoint is rate-limited after launch.
+        let snapshot = limitSnapshot(.claude, fiveHour: 0.3, weekly: 0.42, measuredAt: now.addingTimeInterval(-600),
+                                     status: "Claude limits rate-limited — retrying in 10 min", live: false)
+        claudeLimits.set(snapshot)
+        samples.seed(.claude, label: "Weekly (7-day)", [sample(at: -3600, 0.40), sample(at: -600, 0.42)])
+        let sut = store()
+        await sut.refresh()
+
+        #expect(samples.recorded.allSatisfy { $0.provider != .claude })
+        let claude = try #require(sut.state.provider(.claude))
+        #expect(claude.weekly?.row.percent == 0.42)
+        #expect(claude.hasError == false)
+        #expect(claude.status == "Claude limits rate-limited — retrying in 10 min")
+        #expect(claude.samples["Weekly (7-day)"]?.map(\.percent) == [0.40, 0.42])
+    }
+
     @Test func snapshotsAreRecordedAndTheirSamplesFeedThePace() async throws {
         let snapshot = limitSnapshot(.claude, fiveHour: 0.3, weekly: 0.42)
         claudeLimits.set(snapshot)

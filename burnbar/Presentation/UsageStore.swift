@@ -88,10 +88,11 @@ final class UsageStore {
     static func live(settings: BurnbarSettings) -> UsageStore {
         let window = StripWindow.longest.duration
         let codex = CodexRolloutCollector(window: window)
+        let samples = LimitSampleStore()
         return UsageStore(
             collectors: [.claude: ClaudeTranscriptCollector(window: window), .codex: codex],
-            limits: [.claude: ClaudeLimitsClient(), .codex: codex],
-            samples: LimitSampleStore(),
+            limits: [.claude: ClaudeLimitsClient(samples: samples), .codex: codex],
+            samples: samples,
             accounts: AccountReader(),
             settings: settings
         )
@@ -268,7 +269,9 @@ final class UsageStore {
             guard let source = limitSources[provider],
                   let snapshot = await source.limits(now: now, force: force) else { continue }
             snapshots[provider] = snapshot
-            await sampleStore.record(snapshot)
+            // Last known values were recorded when they were live; re-recording could add samples
+            // at a time a row was not actually read.
+            if snapshot.limitsLive { await sampleStore.record(snapshot) }
             var rows: [String: [LimitSample]] = [:]
             for row in snapshot.rows {
                 rows[row.label] = await sampleStore.samples(provider: provider, label: row.label)
