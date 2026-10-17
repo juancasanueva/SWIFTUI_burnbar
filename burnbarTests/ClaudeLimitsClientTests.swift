@@ -201,6 +201,18 @@ struct ClaudeLimitsClientTests {
         #expect(live.rows.count == 4)
     }
 
+    @Test func persistedRowsOfDifferentAgesAreMeasuredAtTheOldest() async throws {
+        let samples = StubSampleStore()
+        samples.seed(.claude, label: "Weekly (7-day)", [LimitSample(t: now.addingTimeInterval(-600), percent: 0.14, resetsAt: now.addingTimeInterval(3 * 86_400))])
+        samples.seed(.claude, label: "Session (5-hour)", [LimitSample(t: now.addingTimeInterval(-3600), percent: 0.3, resetsAt: now.addingTimeInterval(3600))])
+        let sut = ClaudeLimitsClient(keychain: StubKeychain(), transport: StubTransport([.status(429, "{}")]), samples: samples)
+
+        let limited = try #require(await sut.limits(now: now))
+        #expect(limited.rows.count == 2)
+        // No row is shown as fresher than its own last reading.
+        #expect(limited.measuredAt == now.addingTimeInterval(-3600))
+    }
+
     @Test func liveReadingThisLaunchWinsOverThePersistedSamples() async throws {
         let weeklyReset = now.addingTimeInterval(3 * 86_400)
         let samples = StubSampleStore()

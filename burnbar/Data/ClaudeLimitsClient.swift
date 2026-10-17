@@ -197,7 +197,7 @@ actor ClaudeLimitsClient: LimitsSource {
     }
 
     /// The newest persisted sample of each known window whose reported reset is still ahead,
-    /// measured at the newest of those samples; nil when there is none. Window lengths come from
+    /// measured at the oldest of those samples so no row looks fresher than it is; nil when there is none. Window lengths come from
     /// `ClaudeUsageResponse.layout`; samples without a reported reset cannot be placed and are skipped.
     private func lastPersisted(now: Date) async -> LimitSnapshot? {
         guard let samples else { return nil }
@@ -208,7 +208,7 @@ actor ClaudeLimitsClient: LimitsSource {
                   let resetsAt = sample.resetsAt, resetsAt > now else { continue }
             rows.append(LimitRow(label: label, percent: sample.percent, resetsAt: resetsAt,
                                  windowDuration: TimeInterval(minutes) * 60))
-            measuredAt = max(measuredAt ?? sample.t, sample.t)
+            measuredAt = min(measuredAt ?? sample.t, sample.t)
         }
         guard let measuredAt else { return nil }
         return LimitSnapshot(provider: .claude, rows: rows, measuredAt: measuredAt, limitsLive: false)
