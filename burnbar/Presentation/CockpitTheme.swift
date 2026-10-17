@@ -255,7 +255,7 @@ struct CockpitIconButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(isQuiet ? palette.tertiary : palette.primary)
+                .foregroundStyle(isQuiet ? palette.secondary : palette.primary)
                 .frame(width: 18, height: 18)
                 .contentShape(Rectangle())
         }
